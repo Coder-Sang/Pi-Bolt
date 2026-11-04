@@ -12,16 +12,20 @@ name: release
 # before this runs (gh workflow run runtime.yml -f tag=bolt-vX.Y.Z). Either way the prepare job checks each runtime's build
 # provenance attestation and stops the release when one does not verify (docs/RELEASING.md, "Provenance"). Each build job
 # attests the archives it makes.
+#
+# bolt-vX.Y.Z-message tags take the separate Linux x64 test path: an unsigned prerelease, with VERSION left unchanged.
+# dry_run keeps only Actions artifacts. The test publisher never calls publish.yml or changes an existing release.
+# An existing tag can be built with workflow_dispatch from a branch containing this workflow (docs/TEST-BUILDS.md).
 on:
   push:
     tags: ["bolt-v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "The bolt-vX.Y.Z tag to build (it must exist)"
+        description: "Existing tag: bolt-vX.Y.Z for release, bolt-vX.Y.Z-message for an unsigned prerelease"
         required: true
       dry_run:
-        description: "Build and test only: no draft release (works for a tag already released)"
+        description: "Build and test only: no draft release or test prerelease (works for a tag already released)"
         type: boolean
         default: false
 
@@ -38,8 +42,189 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  test-build:
+    name: Test archives on Linux x64
+    if: ${{ endsWith(github.event.inputs.tag || github.ref_name, '-message') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: The test tag
+        shell: bash
+        run: |
+          [[ "$TAG" =~ ^bolt-v[0-9]+\.[0-9]+\.[0-9]+-message$ ]] || { echo "not a test tag: $TAG"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux xz-utils
+          for flag in avx2 bmi1 abm; do grep -qw "$flag" /proc/cpuinfo || { echo "this runner's CPU has no $flag"; exit 1; }; done
+      - name: Source version
+        id: source
+        run: |
+          version=$(cat VERSION)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid VERSION: $version"; exit 1; }
+          commit=$(git rev-parse HEAD)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          { echo "version=$version"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
+      # As in ci.yml: the upstream runtime's signature and checksum must verify. No draft runtime or signing secret is used.
+      - name: Signed runtime of the latest upstream release
+        run: scripts/fetch-runtime.sh
+      - name: Pi
+        run: scripts/prepare-pi.sh
+      - name: Build and package
+        run: scripts/package-release.sh
+      - name: Tests on every build, as unpacked from its archive
+        run: |
+          mkdir -p .work/unpacked
+          for archive in "dist/$VERSION/pi-bolt-linux-x64"*.tar.xz; do
+            tar -C .work/unpacked -xf "$archive"
+            dir=.work/unpacked/$(basename "$archive" .tar.xz)
+            "$dir/pi" --version | tee /dev/stderr | grep -qF "Pi-Bolt $VERSION,"
+            tests/pi/run.sh "$PWD/$dir/pi"
+          done
+      - name: Test build metadata and checksums
+        run: |
+          python3 - "$TAG" "$VERSION" "$(git rev-parse HEAD)" <<'PY'
+          import json, os, pathlib, subprocess, sys
+          tag, version, commit = sys.argv[1:]
+          stamp = pathlib.Path(".work/runtime/RUNTIME_STAMP")
+          metadata = {
+              "kind": "test",
+              "tag": tag,
+              "version": version,
+              "commit": commit,
+              "platform": "linux-x64",
+              "runtimeVersion": subprocess.check_output([".work/runtime/bun", "--version"], text=True).strip(),
+              "runtimeStamp": stamp.read_text().strip() if stamp.exists() else None,
+              "workflowRef": os.environ["GITHUB_WORKFLOW_REF"],
+              "workflowCommit": os.environ["GITHUB_WORKFLOW_SHA"],
+              "runUrl": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
+          }
+          pathlib.Path(f"dist/{version}/TEST_BUILD.json").write_text(json.dumps(metadata, indent=2) + "\n")
+          PY
+          (
+            cd "dist/$VERSION"
+            { echo "# pi-bolt test build $TAG (VERSION $VERSION)"; sha256sum -- *.tar.gz *.tar.xz extensions.txt TEST_BUILD.json; } > SHA256SUMS
+          )
+          {
+            echo "### Test build: $TAG"
+            echo "Source commit: $(git rev-parse HEAD)"
+            echo "Package VERSION: $VERSION (the test tag is a build label)"
+            echo "Download test-${TAG}-linux-x64 artifacts from this run. Checksums are unsigned; these are test archives."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-${{ env.TAG }}-linux-x64
+          path: |
+            dist/${{ env.VERSION }}/*.tar.gz
+            dist/${{ env.VERSION }}/*.tar.xz
+            dist/${{ env.VERSION }}/extensions.txt
+            dist/${{ env.VERSION }}/SHA256SUMS
+            dist/${{ env.VERSION }}/TEST_BUILD.json
+          if-no-files-found: error
+          retention-days: 14
+
+  test-publish:
+    name: Publish unsigned test prerelease
+    needs: test-build
+    if: ${{ endsWith(github.event.inputs.tag || github.ref_name, '-message') && !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.test-build.outputs.version }}
+      SOURCE_COMMIT: ${{ needs.test-build.outputs.commit }}
+    steps:
+      # No checkout or execution of the tagged source in this job with write permission.
+      - name: Existing tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^bolt-v[0-9]+\.[0-9]+\.[0-9]+-message$ ]] || { echo "not a test tag: $TAG"; exit 1; }
+          commit=$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          test "$commit" = "$SOURCE_COMMIT" || { echo "the tag no longer points to the tested source"; exit 1; }
+          # List releases as well as drafts; API errors must not be treated as an absent release.
+          existing=$(gh api --method GET --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id")
+          if [ -n "$existing" ]; then
+            echo "::error::A release for $TAG already exists; it will not be changed."
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: test-${{ env.TAG }}-linux-x64
+          path: test-release
+      - name: Verify test artifacts and write release notes
+        working-directory: test-release
+        run: |
+          python3 <<'PY'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path(".")
+          archives = {f"pi-bolt-linux-x64{variant}.tar.{ext}" for variant in ("", "-baseline", "-jit") for ext in ("gz", "xz")}
+          archives |= {"pi-bolt-kit-linux-x64.tar.gz", "pi-bolt-runtime-linux-x64.tar.gz"}
+          checked = archives | {"extensions.txt", "TEST_BUILD.json"}
+          assert {p.name for p in root.iterdir()} == checked | {"SHA256SUMS"}, "unexpected or missing test artifacts"
+          assert all(p.is_file() and not p.is_symlink() for p in root.iterdir()), "test artifacts must be regular files"
+          sums = root.joinpath("SHA256SUMS").read_text().splitlines()
+          assert sums[0] == f'# pi-bolt test build {os.environ["TAG"]} (VERSION {os.environ["VERSION"]})'
+          entries = [line.split("  ", 1) for line in sums[1:]]
+          assert len(entries) == len(checked) and {name for _, name in entries} == checked, "incomplete checksums"
+          for digest, name in entries:
+              assert hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest() == digest, f"checksum mismatch: {name}"
+          metadata = json.loads(root.joinpath("TEST_BUILD.json").read_text())
+          for field, expected in {"kind": "test", "tag": os.environ["TAG"], "version": os.environ["VERSION"], "commit": os.environ["SOURCE_COMMIT"], "platform": "linux-x64", "workflowCommit": os.environ["GITHUB_WORKFLOW_SHA"]}.items():
+              assert metadata[field] == expected, f"unexpected {field}"
+          notes = f'''Unsigned, unofficial Message ID test build. This is a prerelease and is never marked latest.
+
+          - Test label: `{metadata["tag"]}`; package VERSION: `{metadata["version"]}`.
+          - Source commit: `{metadata["commit"]}`.
+          - Workflow commit: `{metadata["workflowCommit"]}`.
+          - Build: {metadata["runUrl"]}
+
+          Linux x64: default, baseline and JIT archives, compile kit and runtime. `TEST_BUILD.json` records their source and runtime.
+          `SHA256SUMS` is unsigned. Download and unpack directly; run `./pi --version` or `./pi --mode rpc` from the unpacked directory.
+          These archives are not intended for the signed release installers. No npm, site or Homebrew publication is performed.
+          '''
+          pathlib.Path(os.environ["RUNNER_TEMP"], "test-release-notes.md").write_text(notes)
+          PY
+      - name: Create test prerelease
+        working-directory: test-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$SOURCE_COMMIT" \
+            --prerelease --latest=false --title "Pi-Bolt $TAG (unsigned test; VERSION $VERSION)" \
+            --notes-file "$RUNNER_TEMP/test-release-notes.md" ./*
+          gh api --method GET "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/published-test-release.json"
+          python3 <<'PY'
+          import json, os, pathlib
+          release = json.loads(pathlib.Path(os.environ["RUNNER_TEMP"], "published-test-release.json").read_text())
+          assert release["tag_name"] == os.environ["TAG"] and release["prerelease"] and not release["draft"]
+          assets = {asset["name"]: asset for asset in release["assets"]}
+          assert len(assets) == len(release["assets"]) and set(assets) == {p.name for p in pathlib.Path(".").iterdir()}
+          for name, asset in assets.items():
+              assert asset["state"] == "uploaded" and asset["size"] == pathlib.Path(name).stat().st_size, f"bad upload: {name}"
+          with pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+              summary.write(f'### Unsigned test prerelease\n{release["html_url"]}\n')
+          PY
+
   prepare:
     name: Versions and runtime
+    if: ${{ !endsWith(github.event.inputs.tag || github.ref_name, '-message') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -425,7 +610,7 @@ jobs:
   draft:
     name: Draft release
     needs: [prepare, build, build-windows]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && !endsWith(github.event.inputs.tag || github.ref_name, '-message') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
