@@ -199,24 +199,39 @@ export class RpcClient {
 		message: string,
 		images?: ImageContent[],
 		streamingBehavior?: "steer" | "followUp",
+		options?: { messageId?: string },
 	): Promise<PromptDisposition> {
-		const response = await this.send({ type: "prompt", message, images, streamingBehavior });
+		const response = await this.send({
+			type: "prompt",
+			message,
+			images,
+			streamingBehavior,
+			message_id: options?.messageId,
+		});
 		return this.getData<{ disposition: PromptDisposition }>(response).disposition;
 	}
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
-	async steer(message: string, images?: ImageContent[]): Promise<QueuedInputDisposition> {
-		const response = await this.send({ type: "steer", message, images });
+	async steer(
+		message: string,
+		images?: ImageContent[],
+		options?: { messageId?: string },
+	): Promise<QueuedInputDisposition> {
+		const response = await this.send({ type: "steer", message, images, message_id: options?.messageId });
 		return this.getData<{ disposition: QueuedInputDisposition }>(response).disposition;
 	}
 
 	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 */
-	async followUp(message: string, images?: ImageContent[]): Promise<QueuedInputDisposition> {
-		const response = await this.send({ type: "follow_up", message, images });
+	async followUp(
+		message: string,
+		images?: ImageContent[],
+		options?: { messageId?: string },
+	): Promise<QueuedInputDisposition> {
+		const response = await this.send({ type: "follow_up", message, images, message_id: options?.messageId });
 		return this.getData<{ disposition: QueuedInputDisposition }>(response).disposition;
 	}
 

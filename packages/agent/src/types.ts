@@ -54,6 +54,12 @@ export type ToolExecutionMode = "sequential" | "parallel";
  */
 export type QueueMode = "all" | "one-at-a-time";
 
+/** A committed input operation; a consume reports one queue drain, not a provider-response boundary. */
+export type AgentInputOperation =
+	| { reason: "prompt_start"; source: "prompt"; messages: readonly AgentMessage[] }
+	| { reason: "enqueue" | "consume"; source: "steer" | "followUp"; messages: readonly AgentMessage[] }
+	| { reason: "clear"; steering: readonly AgentMessage[]; followUp: readonly AgentMessage[] };
+
 /** A single tool call content block emitted by an assistant message. */
 export type AgentToolCall = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 

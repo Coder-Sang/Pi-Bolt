@@ -396,11 +396,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				void session
 					.prompt(command.message, {
 						images: command.images,
+						messageId: command.message_id,
 						streamingBehavior: command.streamingBehavior,
 						source: "rpc",
 						preflightResult: (disposition) => {
 							preflightSucceeded = true;
-							output(success(id, "prompt", { disposition }));
+							output(
+								success(id, "prompt", {
+									disposition,
+									...(command.message_id === undefined ? {} : { message_id: command.message_id }),
+								}),
+							);
 						},
 					})
 					.catch((e) => {
@@ -412,13 +418,25 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				const disposition = await session.steer(command.message, command.images, { source: "rpc" });
-				return success(id, "steer", { disposition });
+				const disposition = await session.steer(command.message, command.images, {
+					source: "rpc",
+					messageId: command.message_id,
+				});
+				return success(id, "steer", {
+					disposition,
+					...(command.message_id === undefined ? {} : { message_id: command.message_id }),
+				});
 			}
 
 			case "follow_up": {
-				const disposition = await session.followUp(command.message, command.images, { source: "rpc" });
-				return success(id, "follow_up", { disposition });
+				const disposition = await session.followUp(command.message, command.images, {
+					source: "rpc",
+					messageId: command.message_id,
+				});
+				return success(id, "follow_up", {
+					disposition,
+					...(command.message_id === undefined ? {} : { message_id: command.message_id }),
+				});
 			}
 
 			case "abort": {
@@ -779,6 +797,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 		const command = parsed as RpcCommand;
 		try {
+			// Wire input is untrusted even though the command dispatcher uses the typed protocol.
+			if (
+				(command.type === "prompt" || command.type === "steer" || command.type === "follow_up") &&
+				"message_id" in command &&
+				(typeof command.message_id !== "string" || command.message_id.length === 0)
+			) {
+				throw new Error("message_id must be a non-empty string");
+			}
 			const response = await handleCommand(command);
 			if (response) {
 				output(response);

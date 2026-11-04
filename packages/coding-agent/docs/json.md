@@ -118,12 +118,56 @@ Use `toolCallId` to correlate the lifecycle. `partialResult` is the latest parti
 
 | Event | Fields | Meaning |
 |---|---|---|
-| `queue_update` | `steering`, `followUp` | The pending steering or follow-up queue changed. Both fields contain the complete current queue. |
+| `queue_update` | `steering`, `followUp`, optional `tracking` | Pending user-text snapshots, optionally with the committed input operation and IDs. |
 | `entry_appended` | `entry` | An extension appended a custom session entry through `pi.appendEntry()`. |
 | `session_info_changed` | `name` | The session display name changed. An absent `name` means it was cleared. |
 | `thinking_level_changed` | `level` | The active thinking level changed. |
 
 The `entry` value uses a persisted [session entry type](session-format.md#entry-types).
+
+### Input tracking
+
+RPC inputs can supply `message_id`; SDK callers use `messageId`. The first queued or started input with an ID enables `queue_update.tracking` for the remaining lifetime of that `AgentSession`. Without identified inputs, the original queue event shape is retained. No additional consumption event type is introduced.
+
+```json
+{
+  "type": "queue_update",
+  "steering": [],
+  "followUp": [],
+  "tracking": {
+    "version": 1,
+    "instanceId": "runtime-uuid",
+    "sequence": 4,
+    "batchId": "runtime-uuid:4",
+    "change": {
+      "reason": "consume",
+      "source": "followUp",
+      "messageIds": ["B", "C"]
+    },
+    "steeringMessageIds": [],
+    "followUpMessageIds": []
+  }
+}
+```
+
+`instanceId` identifies the live session object, changing when it is replaced or restarted, even if the persisted session ID is reused. `sequence` increases for each tracked queue event in that instance. Reentrant queue changes are dispatched after the current snapshot has reached its listeners.
+
+`steeringMessageIds` and `followUpMessageIds` align with the legacy text arrays. A `null` ID denotes an input submitted without an ID. Operation `messageIds` also retain unidentified positions, including system or custom messages in an initial prompt or queue drain.
+
+| `tracking.change.reason` | Additional change fields | Meaning |
+|---|---|---|
+| `enqueue` | `source`, `messageIds` | Inputs entered the actual steering or follow-up queue. This does not mean they have been consumed. |
+| `consume` | `source`, ordered `messageIds` | One actual queue drain selected these inputs together. `tracking.batchId` identifies the drain. |
+| `prompt_start` | `source: "prompt"`, ordered `messageIds` | Initial inputs were handed to the active run. This is not a dequeue. `tracking.batchId` identifies the handoff. |
+| `clear` | `messageIds: { steering: [...], followUp: [...] }` | These pending inputs were actually removed. A clear has no batch ID. |
+
+A batch identifies input scheduling, not a model response or confirmation that a provider received the input. A drain can precede compaction or next-turn preparation, which may fail or be aborted before the input reaches a provider. Multiple drains may feed the same provider request, and tool continuations or retries may produce several responses after one drain. Initial handoff and direct `Agent.continue()` consumption can be reported before `agent_start`.
+
+The queue mode controls batching: `all` drains the queue as it exists at that point; `one-at-a-time` drains its oldest item. Steering takes precedence over follow-up, so mixed queues do not provide a global FIFO across both sources. A queue snapshot alone is not evidence that an input was consumed.
+
+`clear_queue` reports only inputs still pending; an already drained batch cannot be cleared. `abort` preserves pending inputs and does not put drained inputs back. Retry and compaction recovery do not repeat an earlier input handoff; newly drained inputs produce their own operations. Keep consuming lifecycle events and use `agent_settled` for final settlement. A `handled` or rejected submission produces no input handoff for that submission, although an extension can independently queue other work.
+
+Tracking is runtime-only: IDs, queue operations, and batch IDs are not placed in model messages, persisted history, or a replay log. Input IDs are caller-provided correlation values, not idempotency keys or output-message IDs. Hosts own external stream binding and each external protocol's response lifecycle.
 
 ## Compaction events
 

@@ -69,6 +69,19 @@ A steering message enters after the current assistant turn and its tool calls. A
 
 `abort()` stops the active operation and waits for the session to become idle. `waitForIdle()` waits without aborting it.
 
+Pass an optional `messageId` to correlate a submitted input with actual queue operations:
+
+```typescript
+const run = session.prompt("Start", { messageId: "A" });
+await session.steer("Change direction", undefined, { messageId: "B" });
+await session.followUp("Summarize afterwards", undefined, { messageId: "C" });
+await run;
+```
+
+For a busy session, `prompt(text, { messageId, streamingBehavior: "steer" | "followUp" })` uses the selected queue. `sendUserMessage()` also accepts `messageId`. Successful acceptance and actual consumption are separate; subscribe before submitting. Identified inputs enable the optional `queue_update.tracking` fields, described in [input tracking](json.md#input-tracking). IDs never enter model messages or persisted history, and callers supply unique IDs rather than treating them as idempotency keys.
+
+The subprocess `RpcClient` accepts `{ messageId }` as the fourth argument of `prompt(message, images?, streamingBehavior?, options?)`, or the third argument of `steer(message, images?, options?)` and `followUp(message, images?, options?)`. Their existing disposition return values are unchanged.
+
 ## Subscribing to events
 
 Subscribe before prompting when the host needs streamed output:

@@ -43,6 +43,15 @@ Response:
 
 The `images` field is optional. Each image uses `ImageContent` format: `{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}`.
 
+**Input correlation**: `prompt`, `steer`, and `follow_up` accept an optional non-empty `message_id`. It identifies the submitted input independently of the RPC command `id`. Successful responses echo it in `data.message_id`, including `"handled"` responses:
+
+```json
+{"id":"rpc-17","type":"prompt","message_id":"input-B","message":"New instruction","streamingBehavior":"followUp"}
+{"id":"rpc-17","type":"response","command":"prompt","success":true,"data":{"disposition":"queued","message_id":"input-B"}}
+```
+
+IDs are correlation values, not deduplication keys; callers should assign a unique ID to each input. They survive input transformations but are not added to model messages or persisted session entries. Supplying an ID for a queued or started input enables the optional `queue_update.tracking` fields for that session instance. See [input tracking](json.md#input-tracking) for actual consumption, clearing, ordering, and cancellation semantics. Acceptance is separate from consumption, and events may arrive before the command response. Establish the ID mapping and subscribe before submitting.
+
 ### steer
 
 Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
@@ -56,7 +65,7 @@ With images:
 {"type": "steer", "message": "Look at this instead", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}]}
 ```
 
-The `images` field is optional. Each image uses `ImageContent` format (same as `prompt`).
+The `images` field is optional. Each image uses `ImageContent` format (same as `prompt`). The optional `message_id` has the same input-correlation semantics as for `prompt`.
 
 Response:
 ```json
@@ -80,7 +89,7 @@ With images:
 {"type": "follow_up", "message": "Also check this image", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}]}
 ```
 
-The `images` field is optional. Each image uses `ImageContent` format (same as `prompt`).
+The `images` field is optional. Each image uses `ImageContent` format (same as `prompt`). The optional `message_id` has the same input-correlation semantics as for `prompt`.
 
 Response:
 ```json

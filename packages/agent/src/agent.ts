@@ -19,6 +19,7 @@ import type {
 	AfterToolCallResult,
 	AgentContext,
 	AgentEvent,
+	AgentInputOperation,
 	AgentLoopConfig,
 	AgentLoopTurnUpdate,
 	AgentMessage,
@@ -136,6 +137,8 @@ export interface AgentOptions {
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
+	/** Synchronous observer of committed input operations. Must not throw. */
+	onInputOperation?: (operation: AgentInputOperation) => void;
 	sessionId?: string;
 	thinkingBudgets?: ThinkingBudgets;
 	transport?: Transport;
@@ -176,8 +179,10 @@ class PendingMessageQueue {
 		return drained;
 	}
 
-	clear(): void {
+	clear(): AgentMessage[] {
+		const cleared = this.messages;
 		this.messages = [];
+		return cleared;
 	}
 }
 
@@ -238,6 +243,8 @@ export class Agent {
 	public toolExecution: ToolExecutionMode;
 	/** Request identity forwarded to the stream function, over `DEFAULT_AGENT_IDENTITY`. */
 	public identity?: ClientIdentity;
+	/** Observes input operations without adding metadata to model messages. */
+	public onInputOperation?: (operation: AgentInputOperation) => void;
 
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
@@ -265,6 +272,7 @@ export class Agent {
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
 		this.identity = runtimeOptions.identity;
+		this.onInputOperation = runtimeOptions.onInputOperation;
 	}
 
 	/**
@@ -312,27 +320,32 @@ export class Agent {
 	/** Queue a message to be injected after the current assistant turn finishes. */
 	steer(message: AgentMessage): void {
 		this.steeringQueue.enqueue(message);
+		this.onInputOperation?.({ reason: "enqueue", source: "steer", messages: [message] });
 	}
 
 	/** Queue a message to run only after the agent would otherwise stop. */
 	followUp(message: AgentMessage): void {
 		this.followUpQueue.enqueue(message);
+		this.onInputOperation?.({ reason: "enqueue", source: "followUp", messages: [message] });
 	}
 
 	/** Remove all queued steering messages. */
 	clearSteeringQueue(): void {
-		this.steeringQueue.clear();
+		const messages = this.steeringQueue.clear();
+		if (messages.length > 0) this.onInputOperation?.({ reason: "clear", steering: messages, followUp: [] });
 	}
 
 	/** Remove all queued follow-up messages. */
 	clearFollowUpQueue(): void {
-		this.followUpQueue.clear();
+		const messages = this.followUpQueue.clear();
+		if (messages.length > 0) this.onInputOperation?.({ reason: "clear", steering: [], followUp: messages });
 	}
 
 	/** Remove all queued steering and follow-up messages. */
 	clearAllQueues(): void {
-		this.clearSteeringQueue();
-		this.clearFollowUpQueue();
+		const steering = this.steeringQueue.clear();
+		const followUp = this.followUpQueue.clear();
+		this.onInputOperation?.({ reason: "clear", steering, followUp });
 	}
 
 	/** Returns true when either queue still contains pending messages. */
@@ -377,8 +390,7 @@ export class Agent {
 		this._state.streamingMessage = undefined;
 		this._state.pendingToolCalls = new Set<string>();
 		this._state.errorMessage = undefined;
-		this.clearFollowUpQueue();
-		this.clearSteeringQueue();
+		this.clearAllQueues();
 	}
 
 	/** Start a new prompt from text, a single message, or a batch of messages. */
@@ -408,13 +420,13 @@ export class Agent {
 		if (lastMessage.role === "assistant") {
 			const queuedSteering = this.steeringQueue.drain();
 			if (queuedSteering.length > 0) {
-				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
+				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true, source: "steer" });
 				return;
 			}
 
 			const queuedFollowUps = this.followUpQueue.drain();
 			if (queuedFollowUps.length > 0) {
-				await this.runPromptMessages(queuedFollowUps);
+				await this.runPromptMessages(queuedFollowUps, { source: "followUp" });
 				return;
 			}
 
@@ -445,9 +457,18 @@ export class Agent {
 
 	private async runPromptMessages(
 		messages: AgentMessage[],
-		options: { skipInitialSteeringPoll?: boolean } = {},
+		options: {
+			skipInitialSteeringPoll?: boolean;
+			source?: Exclude<AgentInputOperation, { reason: "clear" }>["source"];
+		} = {},
 	): Promise<void> {
 		await this.runWithLifecycle(async (signal) => {
+			const source = options.source ?? "prompt";
+			this.onInputOperation?.(
+				source === "prompt"
+					? { reason: "prompt_start", source, messages }
+					: { reason: "consume", source, messages },
+			);
 			await runAgentLoop(
 				messages,
 				this.createContextSnapshot(),
@@ -514,9 +535,15 @@ export class Agent {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
-				return this.steeringQueue.drain();
+				const messages = this.steeringQueue.drain();
+				if (messages.length > 0) this.onInputOperation?.({ reason: "consume", source: "steer", messages });
+				return messages;
 			},
-			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			getFollowUpMessages: async () => {
+				const messages = this.followUpQueue.drain();
+				if (messages.length > 0) this.onInputOperation?.({ reason: "consume", source: "followUp", messages });
+				return messages;
+			},
 		};
 	}
 

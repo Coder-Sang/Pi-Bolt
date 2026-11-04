@@ -168,16 +168,137 @@ async function startRpcMode(options: Parameters<typeof createRuntimeHost>[0]): P
 	rpcIo.lineHandler = undefined;
 
 	const { runtimeHost, cleanup } = await createRuntimeHost(options);
+	const signals = ["SIGTERM", "SIGHUP"] as const;
+	const signalListeners = new Map(signals.map((signal) => [signal, new Set(process.listeners(signal))]));
+	const endListeners = new Set(process.stdin.listeners("end"));
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-	return { lineHandler: rpcIo.lineHandler!, cleanup };
+	return {
+		lineHandler: rpcIo.lineHandler!,
+		cleanup: async () => {
+			try {
+				await cleanup();
+			} finally {
+				// RPC normally exits the process; this harness keeps it alive across test instances.
+				for (const signal of signals) {
+					for (const listener of process.listeners(signal)) {
+						if (!signalListeners.get(signal)?.has(listener)) process.removeListener(signal, listener);
+					}
+				}
+				// Node's listeners() erases the signature of this known end listener.
+				for (const listener of process.stdin.listeners("end")) {
+					if (!endListeners.has(listener)) process.stdin.removeListener("end", listener as () => void);
+				}
+			}
+		},
+	};
 }
 
 describe("RPC prompt response semantics", () => {
 	afterEach(() => {
 		rpcIo.outputLines = [];
 		rpcIo.lineHandler = undefined;
+	});
+
+	it.each(["prompt", "steer", "follow_up"] as const)(
+		"keeps %s message_id separate from the command ID through input transformation",
+		async (type) => {
+			const { lineHandler, cleanup } = await startRpcMode({
+				withAuth: true,
+				responseDelayMs: 0,
+				extensionsResult: await createTestExtensionsResult([
+					(pi) => {
+						pi.on("input", () => ({ action: "transform", text: "transformed" }));
+					},
+				]),
+			});
+			try {
+				lineHandler(JSON.stringify({ id: "rpc-command", type, message: "original", message_id: "input-id" }));
+				await vi.waitFor(() => {
+					const lines = parseOutputLines(rpcIo.outputLines);
+					expect(lines.filter((line) => line.type === "response")).toEqual([
+						{
+							id: "rpc-command",
+							type: "response",
+							command: type,
+							success: true,
+							data: { disposition: type === "prompt" ? "started" : "queued", message_id: "input-id" },
+						},
+					]);
+					expect(lines).toContainEqual(
+						expect.objectContaining({
+							type: "queue_update",
+							tracking: expect.objectContaining({
+								version: 1,
+								change: expect.objectContaining({
+									reason: type === "prompt" ? "prompt_start" : "enqueue",
+									messageIds: expect.arrayContaining(["input-id"]),
+								}),
+							}),
+						}),
+					);
+				});
+				if (type === "prompt") {
+					await vi.waitFor(() => {
+						expect(parseOutputLines(rpcIo.outputLines)).toContainEqual({ type: "agent_settled", aborted: false });
+					});
+					const messages = parseOutputLines(rpcIo.outputLines).filter((line) => line.type === "message_start");
+					expect(JSON.stringify(messages)).toContain("transformed");
+					expect(JSON.stringify(messages)).not.toContain("input-id");
+				}
+			} finally {
+				await cleanup();
+			}
+		},
+	);
+
+	it.each([null, 12, {}, [], ""])("rejects an invalid wire message_id (%j) before admission", async (messageId) => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+		try {
+			lineHandler(JSON.stringify({ id: "invalid", type: "prompt", message: "original", message_id: messageId }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toEqual([
+					{
+						id: "invalid",
+						type: "response",
+						command: "prompt",
+						success: false,
+						error: "message_id must be a non-empty string",
+					},
+				]);
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("echoes a handled message ID without claiming it started or consumed an input", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: false,
+			responseDelayMs: 0,
+			extensionsResult: await createTestExtensionsResult([
+				(pi) => {
+					pi.on("input", () => ({ action: "handled" }));
+				},
+			]),
+		});
+		try {
+			lineHandler(JSON.stringify({ id: "handled-command", type: "prompt", message: "handled", message_id: "H" }));
+			await vi.waitFor(() => {
+				expect(parseOutputLines(rpcIo.outputLines)).toEqual([
+					{
+						id: "handled-command",
+						type: "response",
+						command: "prompt",
+						success: true,
+						data: { disposition: "handled", message_id: "H" },
+					},
+				]);
+			});
+		} finally {
+			await cleanup();
+		}
 	});
 
 	it("emits one failure response when prompt preflight rejects", async () => {

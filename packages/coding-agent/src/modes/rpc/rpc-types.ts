@@ -19,9 +19,16 @@ import type { SourceInfo } from "../../core/source-info.ts";
 
 export type RpcCommand =
 	// Prompting
-	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
-	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
-	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
+	| {
+			id?: string;
+			type: "prompt";
+			message: string;
+			images?: ImageContent[];
+			streamingBehavior?: "steer" | "followUp";
+			message_id?: string;
+	  }
+	| { id?: string; type: "steer"; message: string; images?: ImageContent[]; message_id?: string }
+	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[]; message_id?: string }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "clear_queue" }
 	| { id?: string; type: "new_session"; parentSession?: string }
@@ -115,14 +122,26 @@ export interface RpcSessionState {
 // Success responses with data
 export type RpcResponse =
 	// Prompting
-	| { id?: string; type: "response"; command: "prompt"; success: true; data: { disposition: PromptDisposition } }
-	| { id?: string; type: "response"; command: "steer"; success: true; data: { disposition: QueuedInputDisposition } }
+	| {
+			id?: string;
+			type: "response";
+			command: "prompt";
+			success: true;
+			data: { disposition: PromptDisposition; message_id?: string };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "steer";
+			success: true;
+			data: { disposition: QueuedInputDisposition; message_id?: string };
+	  }
 	| {
 			id?: string;
 			type: "response";
 			command: "follow_up";
 			success: true;
-			data: { disposition: QueuedInputDisposition };
+			data: { disposition: QueuedInputDisposition; message_id?: string };
 	  }
 	| { id?: string; type: "response"; command: "abort"; success: true }
 	| {

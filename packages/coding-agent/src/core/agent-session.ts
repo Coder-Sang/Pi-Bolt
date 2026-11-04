@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import {
@@ -21,6 +22,7 @@ import {
 	type Agent,
 	type AgentContext,
 	type AgentEvent,
+	type AgentInputOperation,
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
@@ -220,6 +222,28 @@ type WithParentToolCallId<E> = E extends {
 	? E & { parentToolCallId?: string }
 	: E;
 
+/** A queue operation. Null IDs identify inputs submitted without a caller-provided ID. */
+export type QueueUpdateChange =
+	| {
+			reason: "enqueue" | "consume" | "prompt_start";
+			source: Exclude<AgentInputOperation, { reason: "clear" }>["source"];
+			messageIds: readonly (string | null)[];
+	  }
+	| { reason: "clear"; messageIds: { steering: readonly (string | null)[]; followUp: readonly (string | null)[] } };
+
+/** Runtime-only input correlation, enabled by submitting a message ID. */
+export interface QueueUpdateTracking {
+	version: 1;
+	instanceId: string;
+	sequence: number;
+	/** Present for consume and prompt_start; identifies input handoff, not a model response. */
+	batchId?: string;
+	change: QueueUpdateChange;
+	/** IDs aligned with the legacy text snapshots, including unidentified inputs. */
+	steeringMessageIds: readonly (string | null)[];
+	followUpMessageIds: readonly (string | null)[];
+}
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| WithParentToolCallId<Exclude<AgentEvent, { type: "agent_end" }>>
@@ -233,6 +257,7 @@ export type AgentSessionEvent =
 			type: "queue_update";
 			steering: readonly string[];
 			followUp: readonly string[];
+			tracking?: QueueUpdateTracking;
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "entry_appended"; entry: SessionEntry }
@@ -341,6 +366,8 @@ export type PromptDisposition = QueuedInputDisposition | "started";
 
 /** Options for AgentSession.prompt() */
 export interface PromptOptions {
+	/** Caller-provided input correlation ID. Never added to model messages or persisted history. */
+	messageId?: string;
 	/** Whether to dispatch extension commands and expand skill commands and prompt templates (default: true) */
 	expandPromptTemplates?: boolean;
 	/** Image attachments */
@@ -390,6 +417,12 @@ export interface SessionStats {
 interface ToolDefinitionEntry {
 	definition: ToolDefinition;
 	sourceInfo: SourceInfo;
+}
+
+interface QueuedUserInput {
+	text: string;
+	message: AgentMessage;
+	messageId: string | null;
 }
 
 function estimateMessagesTokens(messages: AgentMessage[]): number {
@@ -443,9 +476,15 @@ export class AgentSession {
 	private _resolveIdleWait: (() => void) | undefined;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
-	private _steeringMessages: string[] = [];
+	private _steeringMessages: QueuedUserInput[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
-	private _followUpMessages: string[] = [];
+	private _followUpMessages: QueuedUserInput[] = [];
+	private readonly _inputMessageIds = new WeakMap<object, string>();
+	private readonly _queueInstanceId = randomUUID();
+	private _queueTrackingEnabled = false;
+	private _queueUpdateSequence = 0;
+	private _emittingQueueUpdate = false;
+	private readonly _queueUpdateEvents: Extract<AgentSessionEvent, { type: "queue_update" }>[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
@@ -568,6 +607,11 @@ export class AgentSession {
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
+		const previousInputOperation = this.agent.onInputOperation;
+		this.agent.onInputOperation = (operation) => {
+			this._handleInputOperation(operation);
+			previousInputOperation?.(operation);
+		};
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
 		this._installAgentRequestProjection();
@@ -1155,12 +1199,72 @@ export class AgentSession {
 		}
 	}
 
-	private _emitQueueUpdate(): void {
-		this._emit({
+	private _emitQueueUpdate(change: QueueUpdateChange): void {
+		const event: Extract<AgentSessionEvent, { type: "queue_update" }> = {
 			type: "queue_update",
-			steering: [...this._steeringMessages],
-			followUp: [...this._followUpMessages],
-		});
+			steering: this.getSteeringMessages(),
+			followUp: this.getFollowUpMessages(),
+		};
+		if (this._queueTrackingEnabled) {
+			const sequence = ++this._queueUpdateSequence;
+			event.tracking = {
+				version: 1,
+				instanceId: this._queueInstanceId,
+				sequence,
+				...(change.reason === "consume" || change.reason === "prompt_start"
+					? { batchId: `${this._queueInstanceId}:${sequence}` }
+					: {}),
+				change,
+				steeringMessageIds: this._steeringMessages.map((input) => input.messageId),
+				followUpMessageIds: this._followUpMessages.map((input) => input.messageId),
+			};
+		}
+		// A listener may clear or enqueue inputs. Finish this snapshot's dispatch before the next one.
+		this._queueUpdateEvents.push(event);
+		if (this._emittingQueueUpdate) return;
+		this._emittingQueueUpdate = true;
+		try {
+			while (this._queueUpdateEvents.length > 0) {
+				const next = this._queueUpdateEvents.shift();
+				if (next) this._emit(next);
+			}
+		} finally {
+			this._emittingQueueUpdate = false;
+		}
+	}
+
+	private _handleInputOperation(operation: AgentInputOperation): void {
+		if (operation.reason === "clear") {
+			const steering = new Set(operation.steering);
+			const followUp = new Set(operation.followUp);
+			this._steeringMessages = this._steeringMessages.filter((input) => !steering.has(input.message));
+			this._followUpMessages = this._followUpMessages.filter((input) => !followUp.has(input.message));
+			this._emitQueueUpdate({
+				reason: "clear",
+				messageIds: {
+					steering: operation.steering.map((message) => this._inputMessageIds.get(message) ?? null),
+					followUp: operation.followUp.map((message) => this._inputMessageIds.get(message) ?? null),
+				},
+			});
+			return;
+		}
+		const messageIds = operation.messages.map((message) => this._inputMessageIds.get(message) ?? null);
+		if (messageIds.some((id) => id !== null)) this._queueTrackingEnabled = true;
+		let changed = false;
+		if (operation.source !== "prompt") {
+			const queue = operation.source === "steer" ? this._steeringMessages : this._followUpMessages;
+			if (operation.reason === "enqueue") {
+				changed = operation.messages.some((message) => queue.some((input) => input.message === message));
+			} else {
+				const removed = new Set(operation.messages);
+				const remaining = queue.filter((input) => !removed.has(input.message));
+				changed = remaining.length !== queue.length;
+				if (operation.source === "steer") this._steeringMessages = remaining;
+				else this._followUpMessages = remaining;
+			}
+		}
+		if (!changed && !this._queueTrackingEnabled) return;
+		this._emitQueueUpdate({ reason: operation.reason, source: operation.source, messageIds });
 	}
 
 	private async _emitSessionCompactFailed(event: Omit<SessionCompactFailedEvent, "type">): Promise<void> {
@@ -1233,26 +1337,9 @@ export class AgentSession {
 				this._nestedToolCalls.clear();
 			}
 		}
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
-		// This ensures the UI sees the updated queue state
+		// Queue bookkeeping is committed by the input observer at the actual drain point.
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempts = 0;
-			const messageText = contentText(event.message.content, "");
-			if (messageText) {
-				// Check steering queue first
-				const steeringIndex = this._steeringMessages.indexOf(messageText);
-				if (steeringIndex !== -1) {
-					this._steeringMessages.splice(steeringIndex, 1);
-					this._emitQueueUpdate();
-				} else {
-					// Check follow-up queue
-					const followUpIndex = this._followUpMessages.indexOf(messageText);
-					if (followUpIndex !== -1) {
-						this._followUpMessages.splice(followUpIndex, 1);
-						this._emitQueueUpdate();
-					}
-				}
-			}
 		}
 
 		// Emit to extensions first, then notify public listeners.
@@ -2009,12 +2096,16 @@ export class AgentSession {
 	 * starting another, and an abort requested meanwhile aborts the run as soon as it exists.
 	 * @param onStarted Called once the run's messages are prepared, before the first request.
 	 */
-	private async _startRun(trigger: BeforeAgentStartTrigger, onStarted?: () => void): Promise<void> {
+	private async _startRun(
+		trigger: BeforeAgentStartTrigger,
+		onStarted?: () => void,
+		messageId?: string,
+	): Promise<void> {
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
 		let messages: AgentMessage[];
 		try {
-			messages = await this._prepareRun(trigger);
+			messages = await this._prepareRun(trigger, messageId);
 		} catch (error) {
 			this._isAgentRunActive = false;
 			this._flushPendingBashMessages();
@@ -2062,7 +2153,7 @@ export class AgentSession {
 	 * message followed by pending nextTurn messages (consumed here) and handler messages, with a
 	 * system patch first when the prompt changed.
 	 */
-	private async _prepareRun(trigger: BeforeAgentStartTrigger): Promise<AgentMessage[]> {
+	private async _prepareRun(trigger: BeforeAgentStartTrigger, messageId?: string): Promise<AgentMessage[]> {
 		// Check if we need to compact before sending (catches aborted responses).
 		// The starting message is sent below, so do not call agent.continue() here.
 		const lastAssistant = this._findLastAssistantMessage();
@@ -2089,11 +2180,13 @@ export class AgentSession {
 			const normalized = await this._normalizePromptImages(trigger.images);
 			const text =
 				normalized.hints.length > 0 ? `${trigger.prompt}\n\n${normalized.hints.join("\n")}` : trigger.prompt;
-			messages.push({
+			const message: AgentMessage = {
 				role: "user",
 				content: [{ type: "text", text }, ...normalized.images],
 				timestamp: Date.now(),
-			});
+			};
+			if (messageId !== undefined) this._inputMessageIds.set(message, messageId);
+			messages.push(message);
 		}
 		// Inject any pending "nextTurn" messages as context alongside the starting message
 		messages.push(...this._pendingNextTurnMessages);
@@ -2279,11 +2372,7 @@ export class AgentSession {
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
-			} else {
-				await this._queueSteer(expandedText, currentImages);
-			}
+			this._enqueueUserInput(expandedText, currentImages, options.streamingBehavior, options.messageId);
 			preflightResult?.("queued");
 			return;
 		}
@@ -2308,8 +2397,10 @@ export class AgentSession {
 			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 		}
 
-		await this._startRun({ messageType: "user", prompt: expandedText, images: currentImages }, () =>
-			preflightResult?.("started"),
+		await this._startRun(
+			{ messageType: "user", prompt: expandedText, images: currentImages },
+			() => preflightResult?.("started"),
+			options?.messageId,
 		);
 	}
 
@@ -2378,6 +2469,7 @@ export class AgentSession {
 		images: ImageContent[] | undefined,
 		behavior: "steer" | "followUp",
 		source: InputSource,
+		messageId?: string,
 	): Promise<QueuedInputDisposition> {
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -2394,11 +2486,7 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(processedInput.text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		if (behavior === "steer") {
-			await this._queueSteer(expandedText, processedInput.images);
-		} else {
-			await this._queueFollowUp(expandedText, processedInput.images);
-		}
+		this._enqueueUserInput(expandedText, processedInput.images, behavior, messageId);
 		return "queued";
 	}
 
@@ -2414,9 +2502,9 @@ export class AgentSession {
 	async steer(
 		text: string,
 		images?: ImageContent[],
-		options?: { source?: InputSource },
+		options?: { source?: InputSource; messageId?: string },
 	): Promise<QueuedInputDisposition> {
-		return this._queueUserInput(text, images, "steer", options?.source ?? "interactive");
+		return this._queueUserInput(text, images, "steer", options?.source ?? "interactive", options?.messageId);
 	}
 
 	/**
@@ -2430,39 +2518,37 @@ export class AgentSession {
 	async followUp(
 		text: string,
 		images?: ImageContent[],
-		options?: { source?: InputSource },
+		options?: { source?: InputSource; messageId?: string },
 	): Promise<QueuedInputDisposition> {
-		return this._queueUserInput(text, images, "followUp", options?.source ?? "interactive");
+		return this._queueUserInput(text, images, "followUp", options?.source ?? "interactive", options?.messageId);
 	}
 
 	/**
-	 * Internal: Queue a steering message (already expanded, no extension command check).
+	 * Queue an expanded user input, committing both queues before notifying listeners.
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
-		this._steeringMessages.push(text);
-		this._emitQueueUpdate();
+	private _enqueueUserInput(
+		text: string,
+		images: ImageContent[] | undefined,
+		source: "steer" | "followUp",
+		messageId?: string,
+	): void {
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
-	}
-
-	/**
-	 * Internal: Queue a follow-up message (already expanded, no extension command check).
-	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
-		this._followUpMessages.push(text);
-		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
-			content.push(...images);
+		};
+		if (messageId !== undefined) {
+			this._inputMessageIds.set(message, messageId);
+			this._queueTrackingEnabled = true;
 		}
-		this.agent.followUp({ role: "user", content, timestamp: Date.now() });
+		const queue = source === "steer" ? this._steeringMessages : this._followUpMessages;
+		queue.push({ text, message, messageId: messageId ?? null });
+		if (source === "steer") this.agent.steer(message);
+		else this.agent.followUp(message);
 	}
 
 	/**
@@ -2567,7 +2653,7 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean; messageId?: string },
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -2594,6 +2680,7 @@ export class AgentSession {
 			streamingBehavior: options?.deliverAs,
 			images,
 			source: "extension",
+			messageId: options?.messageId,
 		});
 	}
 
@@ -2603,12 +2690,9 @@ export class AgentSession {
 	 * @returns Object with steering and followUp arrays
 	 */
 	clearQueue(): { steering: string[]; followUp: string[] } {
-		const steering = [...this._steeringMessages];
-		const followUp = [...this._followUpMessages];
-		this._steeringMessages = [];
-		this._followUpMessages = [];
+		const steering = [...this.getSteeringMessages()];
+		const followUp = [...this.getFollowUpMessages()];
 		this.agent.clearAllQueues();
-		this._emitQueueUpdate();
 		return { steering, followUp };
 	}
 
@@ -2619,12 +2703,12 @@ export class AgentSession {
 
 	/** Get pending steering messages (read-only) */
 	getSteeringMessages(): readonly string[] {
-		return this._steeringMessages;
+		return this._steeringMessages.map((input) => input.text);
 	}
 
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
-		return this._followUpMessages;
+		return this._followUpMessages.map((input) => input.text);
 	}
 
 	get resourceLoader(): ResourceLoader {
