@@ -22,6 +22,7 @@ jobs:
   tag:
     name: Tag a new version
     if: >-
+      github.repository == 'opensec-git/Pi-Bolt' &&
       vars.AUTO_RELEASE == 'true' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&

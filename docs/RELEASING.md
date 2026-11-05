@@ -1,5 +1,9 @@
 # Releasing Pi-Bolt
 
+For `Coder-Sang/Pi-Bolt`, use [FORK-RELEASING.md](FORK-RELEASING.md). This document describes the original upstream
+multi-platform/npm/site release chain. Its inherited publication jobs are disabled in this fork; its signing key,
+installation domains, repositories and recovery commands do not apply to fork releases.
+
 Six workflows, all on GitHub's own runners (Ubuntu 24.04 x86-64 and ARM64, Windows Server 2025, macOS 15 on Apple silicon):
 
 | Workflow | When | What |

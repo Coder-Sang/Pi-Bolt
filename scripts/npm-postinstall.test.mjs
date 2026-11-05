@@ -151,7 +151,7 @@ function makeRelease({ signer, sumsVersion = VERSION, zips = { x64: buildZip() }
 	return files;
 }
 
-const GITHUB = `https://github.com/opensec-git/Pi-Bolt/releases/download/bolt-v${VERSION}`;
+const GITHUB = `https://github.com/Coder-Sang/Pi-Bolt/releases/download/bolt-v${VERSION}`;
 const REGISTRY = "https://registry.npmjs.org";
 const npmUrl = (variant = "x64") => `${REGISTRY}/@kushalkhemka/pi-bolt-win32-${variant}/-/pi-bolt-win32-${variant}-${VERSION}.tgz`;
 
@@ -313,11 +313,11 @@ test("Windows: checksums changed after they were signed are refused", async (t) 
 	assertPlaceholder(pkgDir);
 });
 
-test("Windows: the real release key does not accept a fake release", async (t) => {
+test("Windows: a separately configured release key does not accept a fake release", async (t) => {
 	const release = makeRelease({ signer: newKey() });
 	const { fetch } = fakeFetch(githubRoutes(release));
 	const pkgDir = makePackage(t);
-	await assert.rejects(run(pkgDir, { fetch, key: install.RELEASE_KEY }).promise, /signature does not verify/);
+	await assert.rejects(run(pkgDir, { fetch, key: newKey().key }).promise, /signature does not verify/);
 	assertPlaceholder(pkgDir);
 });
 
@@ -334,7 +334,7 @@ test("Windows: a mirror (PIBOLT_DOWNLOAD_BASE) without a signature is refused", 
 	const { fetch } = fakeFetch(githubRoutes(release, "http://mirror.test/pi-bolt"));
 	const pkgDir = makePackage(t);
 	await assert.rejects(
-		run(pkgDir, { fetch, key: install.RELEASE_KEY, env: { PIBOLT_DOWNLOAD_BASE: "http://mirror.test/pi-bolt/" } }).promise,
+		run(pkgDir, { fetch, key: newKey().key, env: { PIBOLT_DOWNLOAD_BASE: "http://mirror.test/pi-bolt/" } }).promise,
 		/has no signature/,
 	);
 	assertPlaceholder(pkgDir);
@@ -348,7 +348,7 @@ test("Windows: PIBOLT_ALLOW_UNSIGNED=1, or the SHA-256 of other checksums, does 
 		const { fetch } = fakeFetch(githubRoutes(release, "http://mirror.test/pi-bolt"));
 		const pkgDir = makePackage(t);
 		const env = { PIBOLT_DOWNLOAD_BASE: "http://mirror.test/pi-bolt", PIBOLT_ALLOW_UNSIGNED: value };
-		await assert.rejects(run(pkgDir, { fetch, key: install.RELEASE_KEY, env }).promise, (error) => {
+		await assert.rejects(run(pkgDir, { fetch, key: newKey().key, env }).promise, (error) => {
 			assert.match(error.message, /has no signature/);
 			assert.match(error.message, /not to this download's SHA-256/);
 			assert.ok(error.message.includes(`PIBOLT_ALLOW_UNSIGNED=${sha256(release.SHA256SUMS)}`), "it says the value for this download");
@@ -364,7 +364,7 @@ test("Windows: an unsigned release only with PIBOLT_ALLOW_UNSIGNED set to the SH
 	const { fetch, asked } = fakeFetch(githubRoutes(release, "http://mirror.test/pi-bolt"));
 	const pkgDir = makePackage(t);
 	const env = { PIBOLT_DOWNLOAD_BASE: mirror, PIBOLT_ALLOW_UNSIGNED: sha256(release.SHA256SUMS).toUpperCase() };
-	const { promise, log } = run(pkgDir, { fetch, key: install.RELEASE_KEY, env });
+	const { promise, log } = run(pkgDir, { fetch, key: newKey().key, env });
 	assert.deepEqual(await promise, { variant: "x64", from: "http://mirror.test/pi-bolt", signed: false });
 	assert.ok(asked.every((url) => url.startsWith("http://mirror.test/pi-bolt/")));
 	assert.match(log.join("\n"), /WARNING: http:\/\/mirror\.test\/pi-bolt has no signature for this release \(SHA256SUMS\.sig\)/);
@@ -375,7 +375,7 @@ test("Windows: a signature that does not verify is refused, PIBOLT_ALLOW_UNSIGNE
 	const { fetch } = fakeFetch(githubRoutes(release, "http://mirror.test"));
 	const pkgDir = makePackage(t);
 	const env = { PIBOLT_DOWNLOAD_BASE: "http://mirror.test", PIBOLT_ALLOW_UNSIGNED: sha256(release.SHA256SUMS) };
-	await assert.rejects(run(pkgDir, { fetch, key: install.RELEASE_KEY, env }).promise, /signature does not verify/);
+	await assert.rejects(run(pkgDir, { fetch, key: newKey().key, env }).promise, /signature does not verify/);
 	assertPlaceholder(pkgDir);
 });
 
@@ -383,7 +383,7 @@ test("Windows: a mirror's signature is checked all the same", async (t) => {
 	const release = makeRelease({ signer: newKey() });
 	const { fetch } = fakeFetch(githubRoutes(release, "http://mirror.test"));
 	const pkgDir = makePackage(t);
-	await assert.rejects(run(pkgDir, { fetch, key: install.RELEASE_KEY, env: { PIBOLT_DOWNLOAD_BASE: "http://mirror.test" } }).promise, /signature does not verify/);
+	await assert.rejects(run(pkgDir, { fetch, key: newKey().key, env: { PIBOLT_DOWNLOAD_BASE: "http://mirror.test" } }).promise, /signature does not verify/);
 	assertPlaceholder(pkgDir);
 });
 

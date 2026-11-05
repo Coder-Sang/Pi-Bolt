@@ -224,7 +224,7 @@ jobs:
 
   prepare:
     name: Versions and runtime
-    if: ${{ !endsWith(github.event.inputs.tag || github.ref_name, '-message') }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && !endsWith(github.event.inputs.tag || github.ref_name, '-message') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -610,7 +610,7 @@ jobs:
   draft:
     name: Draft release
     needs: [prepare, build, build-windows]
-    if: ${{ !inputs.dry_run && !endsWith(github.event.inputs.tag || github.ref_name, '-message') }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && !inputs.dry_run && !endsWith(github.event.inputs.tag || github.ref_name, '-message') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

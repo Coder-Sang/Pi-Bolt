@@ -38,8 +38,8 @@ test("test tags isolate the read-only build and prerelease publisher from the fo
 	assert.equal(release.on.workflow_dispatch.inputs.tag.required, true);
 	const selector = "endsWith(github.event.inputs.tag || github.ref_name, '-message')";
 	assert.equal(testBuild.if, `\${{ ${selector} }}`);
-	assert.equal(release.jobs.prepare.if, `\${{ !${selector} }}`);
-	assert.equal(release.jobs.draft.if, `\${{ !inputs.dry_run && !${selector} }}`);
+	assert.equal(release.jobs.prepare.if, `\${{ github.repository == 'opensec-git/Pi-Bolt' && !${selector} }}`);
+	assert.equal(release.jobs.draft.if, `\${{ github.repository == 'opensec-git/Pi-Bolt' && !inputs.dry_run && !${selector} }}`);
 	assert.equal(release.jobs.build.needs, "prepare");
 	assert.equal(release.jobs["build-windows"].needs, "prepare");
 	assert.deepEqual(release.jobs.draft.needs, ["prepare", "build", "build-windows"]);

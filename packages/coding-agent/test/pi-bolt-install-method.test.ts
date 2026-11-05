@@ -88,13 +88,15 @@ describe("piBoltInstallerProcess", () => {
 		if (process.platform === "win32") {
 			expect(command.toLowerCase()).toMatch(/\\system32\\windowspowershell\\v1\.0\\powershell\.exe$/);
 			expect(args.at(-1)).toBe(
-				"[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; try { $installer = irm https://pi-bolt.opensec.in/install.ps1 -ErrorAction Stop } catch { Write-Error $_; exit 1 }; iex $installer; exit $LASTEXITCODE",
+				"[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; try { $installer = irm https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1 -ErrorAction Stop } catch { Write-Error $_; exit 1 }; iex $installer; exit $LASTEXITCODE",
 			);
 		} else {
 			expect(command).toBe("sh");
 			expect(args[0]).toBe("-c");
-			expect(args[1]).toContain("curl -fsSL https://pi-bolt.opensec.in/install.sh");
-			expect(args[1]).toContain("wget -qO- https://pi-bolt.opensec.in/install.sh");
+			expect(args[1]).toContain(
+				"curl -fsSL https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.sh",
+			);
+			expect(args[1]).toContain("wget -qO- https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.sh");
 		}
 	});
 

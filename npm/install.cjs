@@ -28,8 +28,8 @@ const { pipeline } = require("node:stream/promises");
 const zlib = require("node:zlib");
 
 // The public key that releases are signed with (keys/release.pub in the repository, as in install.sh and install.ps1).
-const RELEASE_KEY = "MCowBQYDK2VwAyEAoLboJqtKaoISPqffk03vHZr+1sRBG3uIRIWeKOew+aY=";
-const REPO = "https://github.com/opensec-git/Pi-Bolt";
+const RELEASE_KEY = "MCowBQYDK2VwAyEAS5G5fOKPZWiWhtIlp6a3vzCIWaoN1R7HRFJrwsF4G2s=";
+const REPO = "https://github.com/Coder-Sang/Pi-Bolt";
 const VARIANTS = ["x64", "x64-baseline", "x64-jit"];
 
 /** A reason not to install, said to the user as it is. */
@@ -568,6 +568,7 @@ async function main() {
 		console.error("pi-bolt: this is Pi-Bolt's repository, not an installed package: bin/pi-bolt.exe stays the placeholder");
 		return;
 	}
+	if (process.platform !== "linux" || process.arch !== "x64") fail("this fork's first release supports Linux x64 only");
 	if (process.platform !== "win32") {
 		installPosix({ pkgDir });
 		return;
@@ -611,7 +612,7 @@ if (require.main === module) {
 			console.error(`pi-bolt: downloads went through the proxy ${proxy.replace(/\/\/[^@/]*@/, "//")}; a Node.js older than 22.21 or 24.5 cannot use one (NODE_USE_ENV_PROXY)`);
 		}
 		if (process.platform === "win32") {
-			console.error('pi-bolt: Pi-Bolt was not installed. Try again, or install it with: powershell -c "irm https://pi-bolt.opensec.in/install.ps1 | iex"');
+			console.error('pi-bolt: Pi-Bolt was not installed. Try again, or install it with: powershell -c "irm https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1 | iex"');
 		}
 		process.exitCode = 1;
 	});

@@ -1,0 +1,52 @@
+name: fork-ci
+
+on:
+  push:
+    branches: [pi-bolt]
+  pull_request:
+    branches: [pi-bolt]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux-x64:
+    if: ${{ github.repository == 'Coder-Sang/Pi-Bolt' }}
+    name: Fork Linux x64 checks and binary RPC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Fork identity, release rules and source checks
+        run: |
+          node scripts/configure-fork-release.mjs --check
+          npm run check
+          node --test scripts/fork-release.test.mjs scripts/test-build-workflow.test.mjs scripts/npm-postinstall.test.mjs
+      - name: Message ID source regressions
+        run: |
+          (cd packages/agent && node ../../node_modules/vitest/dist/cli.js --run test/agent.test.ts test/agent-loop.test.ts)
+          (cd packages/coding-agent && node ../../node_modules/vitest/dist/cli.js --run test/rpc-prompt-response-semantics.test.ts test/suite/agent-session-message-id.test.ts test/rpc-client-clear-queue.test.ts)
+          (cd packages/coding-agent && node ../../node_modules/vitest/dist/cli.js --run test/pi-bolt-latest-version.test.ts test/pi-bolt-install-method.test.ts test/pi-bolt-jit-hint.test.ts test/pi-bolt-homebrew.test.ts test/pi-bolt-scoop.test.ts test/pi-bolt-installer.test.ts test/pi-bolt-update-rollback.test.ts)
+      - name: Offline source build and pinned runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm run build:offline
+          scripts/fetch-runtime.sh --locked
+      - name: Build baseline and run offline binary acceptance
+        run: |
+          scripts/build-pi.sh --cpu baseline --out out/pi-bolt-ci
+          python3 tests/pi/rpc-message-id.py "$PWD/out/pi-bolt-ci/pi"

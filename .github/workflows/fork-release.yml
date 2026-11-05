@@ -1,0 +1,205 @@
+name: fork-release
+
+# Tags build candidates. Publishing is an explicit dispatch from pi-bolt and uses its protected release environment.
+on:
+  push:
+    tags: ["bolt-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing numeric production tag, exactly bolt-vVERSION"
+        required: true
+      publish:
+        description: "Sign and publish a stable fork release (pi-bolt branch and protected environment required)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  PUBLISH: ${{ inputs.publish || false }}
+
+jobs:
+  build:
+    if: ${{ github.repository == 'Coder-Sang/Pi-Bolt' && !endsWith(inputs.tag || github.ref_name, '-message') }}
+    name: Linux x64 candidate and binary acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Production tag and publication branch
+        run: |
+          [[ "$TAG" =~ ^bolt-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'a numeric production tag is required'; exit 1; }
+          git rev-parse --verify "refs/tags/$TAG^{commit}"
+          if [ "$PUBLISH" = true ]; then
+            test "$GITHUB_REF" = refs/heads/pi-bolt || { echo 'publish must be dispatched from pi-bolt'; exit 1; }
+            git merge-base --is-ancestor "refs/tags/$TAG^{commit}" "$GITHUB_SHA"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+      - name: Source identity and trust configuration
+        id: source
+        run: |
+          test "$TAG" = "bolt-v$(cat VERSION)" || { echo 'VERSION differs from the tag'; exit 1; }
+          node scripts/configure-fork-release.mjs --check
+          if [ "$PUBLISH" = true ]; then node scripts/configure-fork-release.mjs --check --require-key; fi
+          { echo "commit=$(git rev-parse HEAD)"; echo "version=$(cat VERSION)"; } >> "$GITHUB_OUTPUT"
+      - name: Build tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux xz-utils
+          for flag in avx2 bmi1 abm; do grep -qw "$flag" /proc/cpuinfo || { echo "CPU lacks $flag"; exit 1; }; done
+      - name: Verify pinned upstream runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch-runtime.sh --locked
+      - name: Build Pi offline
+        run: scripts/prepare-pi.sh
+      - name: Package all Linux x64 variants
+        env:
+          PIBOLT_BUN: ${{ github.workspace }}/.work/runtime/bun
+        run: scripts/package-release.sh
+      - name: Acceptance on every unpacked binary
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          mkdir -p .work/accepted
+          for variant in '' '-baseline' '-jit'; do
+            tar -C .work/accepted -xf "dist/$VERSION/pi-bolt-linux-x64${variant}.tar.xz"
+            binary="$PWD/.work/accepted/pi-bolt-linux-x64${variant}/pi"
+            "$binary" --version | grep -qF "Pi-Bolt $VERSION,"
+            python3 tests/pi/rpc-message-id.py "$binary"
+            tests/pi/run.sh "$binary"
+          done
+      - name: Assemble and verify candidate manifest
+        env:
+          VERSION: ${{ steps.source.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          node scripts/fork-release.mjs prepare --dir "dist/$VERSION" --tag "$TAG"
+          node scripts/fork-release.mjs verify --dir "dist/$VERSION" --tag "$TAG" --commit "$SOURCE_COMMIT" --require-clean
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fork-${{ env.TAG }}-linux-x64
+          path: dist/${{ steps.source.outputs.version }}/*
+          if-no-files-found: error
+          retention-days: 14
+
+  attest:
+    name: Attest tested fork candidate
+    needs: build
+    if: ${{ inputs.publish && github.repository == 'Coder-Sang/Pi-Bolt' && github.ref == 'refs/heads/pi-bolt' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fork-${{ env.TAG }}-linux-x64
+          path: release
+      - name: Verify tested candidate before attesting
+        env:
+          SOURCE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: node scripts/fork-release.mjs verify --dir release --tag "$TAG" --commit "$SOURCE_COMMIT" --require-key --require-clean
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+
+  publish:
+    name: Sign and publish reviewed Linux x64 release
+    needs: [build, attest]
+    if: ${{ inputs.publish && github.repository == 'Coder-Sang/Pi-Bolt' && github.ref == 'refs/heads/pi-bolt' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      attestations: read
+    env:
+      SOURCE_COMMIT: ${{ needs.build.outputs.commit }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      # Trusted branch snapshot, not code from a tag or dependency, has access to the signing environment.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Branch, tag ancestry and absent release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/pi-bolt
+          test "$TAG" = "bolt-v$(cat VERSION)"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SOURCE_COMMIT"
+          git merge-base --is-ancestor "$SOURCE_COMMIT" "$GITHUB_SHA"
+          remote=$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          test "$remote" = "$SOURCE_COMMIT"
+          existing=$(gh api --method GET --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id")
+          test -z "$existing" || { echo 'an existing release, including a draft, is never overwritten'; exit 1; }
+          node scripts/configure-fork-release.mjs --check --require-key
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fork-${{ env.TAG }}-linux-x64
+          path: release
+      - name: Verify payload before accessing the private key
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/fork-release.mjs verify --dir release --tag "$TAG" --commit "$SOURCE_COMMIT" --require-key --require-clean
+          gh attestation verify release/SHA256SUMS --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/fork-release.yml" \
+            --source-ref refs/heads/pi-bolt --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
+          test -f "docs/fork-releases/$VERSION.md"
+      - name: Sign with the fork key
+        env:
+          SIGNING_KEY: ${{ secrets.PIBOLT_SIGNING_KEY }}
+        run: |
+          test -n "$SIGNING_KEY" || { echo 'the release environment needs the fork signing key'; exit 1; }
+          key="$RUNNER_TEMP/fork-release-key.pem"
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printenv SIGNING_KEY > "$key")
+          openssl pkey -in "$key" -pubout | cmp -s - keys/release.pub || { echo 'the secret is not the configured fork key'; exit 1; }
+          scripts/sign-release.sh --key "$key" release
+      - name: Verify signed payload and publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/fork-release.mjs verify --dir release --tag "$TAG" --commit "$SOURCE_COMMIT" --require-key --require-clean --signature
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$SOURCE_COMMIT" --latest \
+            --title "Pi-Bolt fork $VERSION (Linux x64)" --notes-file "docs/fork-releases/$VERSION.md" release/*

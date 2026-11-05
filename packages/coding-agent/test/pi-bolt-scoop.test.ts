@@ -80,7 +80,7 @@ describe("a Pi-Bolt installed with Scoop", () => {
 		expect(piBoltInstallMethod()).toBe("installer");
 		expect(piBoltUpdateCommand("scoop")).toBe("scoop update pi-bolt");
 		expect(piBoltJitSwitchCommand("scoop", "win32", "x64-jit")).toBe(
-			'scoop uninstall pi-bolt; $env:PIBOLT_VARIANT = "x64-jit"; irm https://pi-bolt.opensec.in/install.ps1 | iex',
+			'scoop uninstall pi-bolt; $env:PIBOLT_VARIANT = "x64-jit"; irm https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1 | iex',
 		);
 	});
 

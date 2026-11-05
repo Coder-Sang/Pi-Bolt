@@ -62,6 +62,7 @@ describe("fetchReleaseInstaller", () => {
 	const archive = Buffer.from("archive");
 
 	test("returns the release's installer once its signed SHA256SUMS lists that checksum", async () => {
+		expect(BASE).toBe(`https://github.com/Coder-Sang/Pi-Bolt/releases/download/bolt-v${VERSION}`);
 		const { pem, privateKey } = keyPair();
 		serveRelease({
 			privateKey,

@@ -24,7 +24,9 @@ export const PIBOLT: PiBoltBuild | undefined = parsePiBoltBuild(
 );
 
 export const PIBOLT_INSTALL_URL =
-	process.platform === "win32" ? "https://pi-bolt.opensec.in/install.ps1" : "https://pi-bolt.opensec.in/install.sh";
+	process.platform === "win32"
+		? "https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1"
+		: "https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.sh";
 // TLS 1.2 before the first download: Windows PowerShell 5.1 on an older Windows 10 offers only TLS 1.0 by default, which the
 // site refuses, and the installer turns it on only once it is running. Only for the update's own process: the command shown to
 // users is the plain one (README), which Windows' antivirus does not mistake for a downloader.
@@ -85,19 +87,19 @@ export function piBoltInstallerProcess(installerFile?: string): { command: strin
 		],
 	};
 }
-export const PIBOLT_RELEASES_URL = "https://github.com/opensec-git/Pi-Bolt/releases";
+export const PIBOLT_RELEASES_URL = "https://github.com/Coder-Sang/Pi-Bolt/releases";
 /** The key releases' SHA256SUMS are signed with (keys/release.pub; the installers carry it too). */
 export const PIBOLT_RELEASE_KEY = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAoLboJqtKaoISPqffk03vHZr+1sRBG3uIRIWeKOew+aY=
+MCowBQYDK2VwAyEAS5G5fOKPZWiWhtIlp6a3vzCIWaoN1R7HRFJrwsF4G2s=
 -----END PUBLIC KEY-----
 `;
 /** Redirects to the latest release's page (.../releases/tag/bolt-v1.0.2); not counted against GitHub's API limit. */
 export const PIBOLT_LATEST_RELEASE_URL = `${PIBOLT_RELEASES_URL}/latest`;
 /** The releases, pre-releases among them, as an Atom feed; not counted against GitHub's API limit either. */
 export const PIBOLT_RELEASES_FEED = `${PIBOLT_RELEASES_URL}.atom`;
-export const PIBOLT_LATEST_RELEASE_API = "https://api.github.com/repos/opensec-git/Pi-Bolt/releases/latest";
+export const PIBOLT_LATEST_RELEASE_API = "https://api.github.com/repos/Coder-Sang/Pi-Bolt/releases/latest";
 /** The releases, newest first, pre-releases among them (drafts are not shown to anyone without write access). */
-export const PIBOLT_RELEASES_API = "https://api.github.com/repos/opensec-git/Pi-Bolt/releases?per_page=30";
+export const PIBOLT_RELEASES_API = "https://api.github.com/repos/Coder-Sang/Pi-Bolt/releases?per_page=30";
 
 /**
  * Which releases `pi-bolt update` takes: `stable`, the latest release; or `beta`, the newest one, pre-releases included (a
@@ -350,10 +352,10 @@ export function piBoltJitSwitchCommand(
 	// Windows PowerShell 5.1 has no &&.)
 	const manager = piBoltPackageManager(method);
 	if (platform === "win32") {
-		const installer = `$env:PIBOLT_VARIANT = "${variant}"; irm https://pi-bolt.opensec.in/install.ps1 | iex`;
+		const installer = `$env:PIBOLT_VARIANT = "${variant}"; irm https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1 | iex`;
 		return manager ? `${manager.uninstall}; ${installer}` : installer;
 	}
-	const installer = `curl -fsSL https://pi-bolt.opensec.in/install.sh | PIBOLT_VARIANT=${variant} sh`;
+	const installer = `curl -fsSL https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.sh | PIBOLT_VARIANT=${variant} sh`;
 	return manager ? `${manager.uninstall} && ${installer}` : installer;
 }
 

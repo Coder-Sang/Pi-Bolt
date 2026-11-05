@@ -279,7 +279,7 @@ function buildSystemPromptSectionsUncached(input: BuildSystemPromptOptions): Sys
 - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
 - Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)${
 			PIBOLT
-				? "\n- This is Pi-Bolt: its command is `pi-bolt`, and it is updated with `pi-bolt update` (https://github.com/opensec-git/Pi-Bolt). The install and update commands in pi's README install pi itself, not Pi-Bolt: do not suggest them."
+				? "\n- This is the Coder-Sang/Pi-Bolt fork: its command is `pi-bolt`, and it is updated with `pi-bolt update` (https://github.com/Coder-Sang/Pi-Bolt). Its first production release supports Linux x64. The install and update commands in pi's README install pi itself: do not suggest them for this fork."
 				: ""
 		}`;
 	}

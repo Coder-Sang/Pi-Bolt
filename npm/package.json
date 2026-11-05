@@ -1,7 +1,8 @@
 {
 	"name": "pi-bolt",
-	"version": "1.0.9",
-	"description": "Pi, the coding agent, compiled ahead of time to native code: one executable for Linux x86-64 and ARM64 (Android too, in Termux), macOS on Apple silicon and Windows x64, starts 2-3x sooner than Pi on Bun and uses about a third of its CPU over a session",
+	"private": true,
+	"version": "1.0.10",
+	"description": "Coder-Sang/Pi-Bolt fork, Linux x64 distribution",
 	"keywords": [
 		"pi",
 		"coding-agent",
@@ -10,13 +11,13 @@
 		"aot",
 		"bun"
 	],
-	"homepage": "https://github.com/opensec-git/Pi-Bolt",
+	"homepage": "https://github.com/Coder-Sang/Pi-Bolt",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/opensec-git/Pi-Bolt.git",
+		"url": "git+https://github.com/Coder-Sang/Pi-Bolt.git",
 		"directory": "npm"
 	},
-	"bugs": "https://github.com/opensec-git/Pi-Bolt/issues",
+	"bugs": "https://github.com/Coder-Sang/Pi-Bolt/issues",
 	"license": "MIT",
 	"author": "OpenSec",
 	"bin": {

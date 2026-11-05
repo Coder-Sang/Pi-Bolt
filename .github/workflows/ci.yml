@@ -40,6 +40,7 @@ jobs:
   # builds and tests nothing: every job below still reports its check, as passed. Not the three docs/ files build-pi.sh puts in
   # every build. Only code=false skips: if this job fails, everything runs.
   changes:
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' }}
     name: What changed
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -76,7 +77,7 @@ jobs:
   lint:
     name: Lint and types
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && (!cancelled() && needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -119,7 +120,7 @@ jobs:
   unit:
     name: Pi's tests
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && (!cancelled() && needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -152,7 +153,7 @@ jobs:
     needs: changes
     # (When only documentation changed, its steps are skipped, not the job: a skipped matrix job reports no check under each
     # of its names.)
-    if: ${{ !cancelled() }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && (!cancelled()) }}
     strategy:
       fail-fast: false
       matrix:
@@ -244,7 +245,7 @@ jobs:
   pi-bolt-macos-part:
     name: Pi-Bolt on macOS Apple silicon (${{ matrix.label }})
     needs: changes
-    if: ${{ !cancelled() }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && (!cancelled()) }}
     strategy:
       fail-fast: false
       matrix:
@@ -260,7 +261,7 @@ jobs:
   pi-bolt-macos:
     name: Pi-Bolt on macOS Apple silicon
     needs: pi-bolt-macos-part
-    if: ${{ !cancelled() }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && (!cancelled()) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -276,7 +277,7 @@ jobs:
   pi-bolt-windows:
     name: Pi-Bolt on Windows x64
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && (!cancelled() && needs.changes.outputs.code != 'false') }}
     runs-on: windows-2025
     timeout-minutes: 60
     defaults:
@@ -376,6 +377,7 @@ jobs:
           exit $LASTEXITCODE
 
   installer:
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' }}
     name: Installer on ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -445,7 +447,7 @@ jobs:
   engine:
     name: Engine patches apply
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' && (!cancelled() && needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

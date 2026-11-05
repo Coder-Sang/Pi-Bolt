@@ -72,10 +72,10 @@ describe("the JIT build to switch to", () => {
 
 	it("is installed as this one was installed", () => {
 		expect(piBoltJitSwitchCommand("installer", "linux", "x64-jit")).toBe(
-			"curl -fsSL https://pi-bolt.opensec.in/install.sh | PIBOLT_VARIANT=x64-jit sh",
+			"curl -fsSL https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.sh | PIBOLT_VARIANT=x64-jit sh",
 		);
 		expect(piBoltJitSwitchCommand("installer", "win32", "x64-jit")).toBe(
-			'$env:PIBOLT_VARIANT = "x64-jit"; irm https://pi-bolt.opensec.in/install.ps1 | iex',
+			'$env:PIBOLT_VARIANT = "x64-jit"; irm https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1 | iex',
 		);
 		// The npm package reads PIBOLT_VARIANT at every run on macOS and Linux, and when it is installed on Windows.
 		expect(piBoltJitSwitchCommand("npm", "darwin", "arm64-jit")).toBe(

@@ -1,7 +1,7 @@
 # Pi-Bolt installer for Windows (x64).
 #
-#   irm https://pi-bolt.opensec.in/install.ps1 | iex                       (in PowerShell)
-#   powershell -c "irm https://pi-bolt.opensec.in/install.ps1 | iex"      (in Command Prompt)
+#   irm https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1 | iex                       (in PowerShell)
+#   powershell -c "irm https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.ps1 | iex"      (in Command Prompt)
 #
 # Downloads a release, verifies its SHA-256 checksum and the Ed25519 signature of the checksums, installs it to
 # %USERPROFILE%\.pi-bolt and puts `pi-bolt` on your PATH (it asks first). Run it again to reinstall, update or uninstall. The
@@ -33,9 +33,9 @@
 # A folder given in PIBOLT_INSTALL outside your profile is made yours, SYSTEM's and the Administrators' only.
 
 # The public key that releases are signed with (keys/release.pub in the repository; scripts/sign-release.sh).
-$PiBoltReleaseKey = 'MCowBQYDK2VwAyEAoLboJqtKaoISPqffk03vHZr+1sRBG3uIRIWeKOew+aY='
-$PiBoltRepo = 'https://github.com/opensec-git/Pi-Bolt'
-$PiBoltApi = 'https://api.github.com/repos/opensec-git/Pi-Bolt'
+$PiBoltReleaseKey = 'MCowBQYDK2VwAyEAS5G5fOKPZWiWhtIlp6a3vzCIWaoN1R7HRFJrwsF4G2s='
+$PiBoltRepo = 'https://github.com/Coder-Sang/Pi-Bolt'
+$PiBoltApi = 'https://api.github.com/repos/Coder-Sang/Pi-Bolt'
 
 # --- Modules ---------------------------------------------------------------------------------------------------------------
 # PowerShell 7 passes its own module directories to everything it starts, and they come before this PowerShell's own. An
@@ -836,6 +836,7 @@ function Install-PiBoltExtensions($state) {
 
 function Install-PiBolt {
 	Initialize-PiBoltStyle
+	Stop-PiBolt 'This fork first supports signed Linux x64 releases only.'
 	$launcher = $env:PIBOLT_LAUNCHER -eq '1'
 	if ($launcher) { Write-Host "${bold}  Pi-Bolt$reset`n${dim}  First run: getting the native executable$reset`n" }
 	else { Write-Host "`n${bold}  Pi-Bolt Installer$reset`n${dim}  Pi, compiled ahead of time. Native speed, no JIT.$reset`n" }

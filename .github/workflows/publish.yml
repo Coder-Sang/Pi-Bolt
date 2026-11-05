@@ -47,6 +47,7 @@ env:
 jobs:
   verify:
     name: Signature and checksums
+    if: ${{ github.repository == 'opensec-git/Pi-Bolt' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

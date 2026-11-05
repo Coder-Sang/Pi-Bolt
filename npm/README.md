@@ -1,3 +1,10 @@
+# Fork distribution policy
+
+This directory is private in `Coder-Sang/Pi-Bolt`. The fork's first production release is a signed Linux x64 GitHub
+distribution; `npm install pi-bolt` installs the upstream project. Use the [fork installation guide](../README.md) and
+[fork release instructions](../docs/FORK-RELEASING.md). The following original npm documentation is retained as upstream
+reference and does not describe an available fork npm release.
+
 <p align="center">
   <a href="https://github.com/opensec-git/Pi-Bolt">
     <img alt="Pi-Bolt logo" src="https://raw.githubusercontent.com/opensec-git/Pi-Bolt/HEAD/docs/images/logo.svg" width="112">

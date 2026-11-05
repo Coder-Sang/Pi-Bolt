@@ -1,0 +1,6 @@
+{
+  "repository": "Coder-Sang/Pi-Bolt",
+  "branch": "pi-bolt",
+  "platform": "linux-x64",
+  "publicKey": "keys/release.pub"
+}

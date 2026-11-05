@@ -84,7 +84,7 @@ describe.skipIf(process.platform === "win32")("a Pi-Bolt installed with Homebrew
 		expect(piBoltUpdateCommand("homebrew")).toBe("brew upgrade pi-bolt");
 		expect(piBoltUpdateCommand("installer")).toBe("pi-bolt update");
 		expect(piBoltJitSwitchCommand("homebrew", "darwin", "arm64-jit")).toBe(
-			"brew uninstall pi-bolt && curl -fsSL https://pi-bolt.opensec.in/install.sh | PIBOLT_VARIANT=arm64-jit sh",
+			"brew uninstall pi-bolt && curl -fsSL https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.sh | PIBOLT_VARIANT=arm64-jit sh",
 		);
 	});
 

@@ -1,32 +1,24 @@
 #!/bin/sh
 # Pi-Bolt installer.
 #
-#   curl -fsSL https://pi-bolt.opensec.in/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Coder-Sang/Pi-Bolt/pi-bolt/install.sh | sh
 #
-# Downloads a release, verifies its SHA-256 checksum, installs it to ~/.pi-bolt and links `pi-bolt` into ~/.local/bin. Run
-# it again to reinstall, update or uninstall. In Termux (Android) it also installs Termux's glibc, which runs Pi-Bolt, and links
-# `pi-bolt` into $PREFIX/bin. The executable comes from the npm registry (a CDN, fast in most places) and
-# falls back to GitHub; the checksums always come from the GitHub release, so a download from npm is checked against them.
+# Downloads this fork's Linux x64 release from GitHub, verifies its signature and SHA-256 checksum, installs it to
+# ~/.pi-bolt and links `pi-bolt` into ~/.local/bin. Run it again to reinstall, update or uninstall.
 #
 # Environment:
 #   PIBOLT_VERSION   a release tag such as bolt-v0.2.0 (default: the latest release)
 #   PIBOLT_CHANNEL   stable (the latest release; the default) or beta (the newest release, pre-releases included), for this
 #                    installation and its updates (`pi-bolt update --channel` changes it)
-#   PIBOLT_VARIANT   on Linux x86-64, x64, x64-baseline or x64-jit (default: x64 on CPUs with AVX2, x64-baseline otherwise);
-#                    on Linux ARM64 and in Termux, arm64 or arm64-jit (default arm64); on macOS arm64 or arm64-jit (Apple
-#                    silicon; default arm64)
+#   PIBOLT_VARIANT   x64, x64-baseline or x64-jit (default: x64 on CPUs with AVX2, x64-baseline otherwise)
 #   PIBOLT_INSTALL   where to install (default: ~/.pi-bolt)
-#   PIBOLT_BIN_DIR   where to link the `pi-bolt` command (default: ~/.local/bin; in Termux $PREFIX/bin)
+#   PIBOLT_BIN_DIR   where to link the `pi-bolt` command (default: ~/.local/bin)
 #   PIBOLT_YES=1     do not ask: take the default action and do not offer to start Pi-Bolt
 #   PIBOLT_LAUNCHER=1  used by the npm package's first run: download only, no menu, link or prompts
 #   PIBOLT_CONNECTIONS  connections to download over at once (default: 4; 1 for a single connection)
-#   PIBOLT_SOURCE    where to download the executable from: auto (npm, then GitHub; the default), npm or github
-#   PIBOLT_NPM_REGISTRY  the npm registry or mirror to use (default: https://registry.npmjs.org)
-#   PIBOLT_UNVERIFIED  the SHA-256 of a release's SHA256SUMS (the installer shows it), to install that download without a
-#                    check of its signature: where nothing here can check it (no OpenSSL 3, OpenSSH 8.1 or Pi-Bolt installed
-#                    before), or for a release from before 0.6.0, which has none. It matches those checksums only, so a value
-#                    left in the environment does nothing for another download; the npm package's first run ignores it. The
-#                    checksum is still checked, and a signature that does not verify always stops the install.
+#   PIBOLT_SOURCE    auto or github; both use the fork's GitHub release. npm is unsupported for this fork.
+#   PIBOLT_NPM_REGISTRY  registry for optional pinned extensions (default: https://registry.npmjs.org)
+#   PIBOLT_UNVERIFIED  ignored: every fork production installation must verify a signature
 #   PIBOLT_DOWNLOAD_BASE  a mirror of a release to download everything from (its signatures too); needs PIBOLT_VERSION when
 #                    which release is the latest cannot be found out
 #   PIBOLT_EXTENSIONS  yes or no: whether to install OpenSec's optional extensions (opensec-pi-subagents, opensec-pi-todo, opensec-pi-fff)
@@ -34,17 +26,17 @@
 #                    installs none. They are installed at the versions the release pins (its extensions.txt, covered by the
 #                    signed checksums), and only if the registry's tarball has the pinned integrity.
 
-# The public key that releases are signed with (keys/release.pub in the repository; scripts/sign-release.sh), from 0.6.0. A
-# release from before has no signature: it is installed only with PIBOLT_UNVERIFIED.
+# The fork release public key (keys/release.pub; scripts/sign-release.sh).
+# Configured from the fork owner's public key by scripts/configure-fork-release.mjs. Empty fails closed.
 RELEASE_KEY="-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAoLboJqtKaoISPqffk03vHZr+1sRBG3uIRIWeKOew+aY=
+MCowBQYDK2VwAyEAS5G5fOKPZWiWhtIlp6a3vzCIWaoN1R7HRFJrwsF4G2s=
 -----END PUBLIC KEY-----"
 
 ESC=$(printf '\033')
 CR=$(printf '\r')
 ETX=$(printf '\003')
-REPO="https://github.com/opensec-git/Pi-Bolt"
-API="https://api.github.com/repos/opensec-git/Pi-Bolt"
+REPO="https://github.com/Coder-Sang/Pi-Bolt"
+API="https://api.github.com/repos/Coder-Sang/Pi-Bolt"
 NPM_REGISTRY="${PIBOLT_NPM_REGISTRY:-https://registry.npmjs.org}"
 
 main() {
@@ -57,6 +49,9 @@ main() {
 	if [ -n "$TERMUX" ]; then BIN_DIR="${PIBOLT_BIN_DIR:-$PREFIX/bin}"; else BIN_DIR="${PIBOLT_BIN_DIR:-$HOME/.local/bin}"; fi
 	LAUNCHER="${PIBOLT_LAUNCHER:-0}"
 	setup_style
+	[ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] && [ -z "$TERMUX" ] || fail "this fork's first release supports Linux x64 with glibc only"
+	[ -n "$RELEASE_KEY" ] || fail "the fork release signing key is not configured; no download was attempted"
+	case "${PIBOLT_SOURCE:-auto}" in auto | github) export PIBOLT_SOURCE=github ;; *) fail "this fork distributes binaries through its GitHub releases only" ;; esac
 	# (The npm package's first run is not asked for by the user: nothing is installed there without a signature check.)
 	[ "$LAUNCHER" != 1 ] || unset PIBOLT_UNVERIFIED
 	case "$VERSION" in
@@ -552,7 +547,7 @@ fetch_signature() {
 }
 
 # The release key in OpenSSH's form, for SHA256SUMS.sshsig (node scripts/lib/sshsig.mjs pubkey keys/release.pub).
-RELEASE_SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKC26CarSmqCEj6n35NN7x2a/tbEQRt7iESFnijnsPmm"
+RELEASE_SSH_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuRuXzij2VolobSJaemt78wiFmqDdUex0RSa8LBeBtr"
 
 # Whether ssh-keygen can verify signatures (-Y, OpenSSH 8.1 and later).
 ssh_keygen_verifies() {
@@ -560,12 +555,9 @@ ssh_keygen_verifies() {
 	case "$(ssh-keygen -Y find-principals 2>&1)" in *"illegal option"* | *"unknown option"* | *"invalid option"*) return 1 ;; esac
 }
 
-# Whether this release is from after signing began; one whose version is not known counts as one.
+# Every fork production version is signed.
 signed_release() {
-	case "$SHOWN_VERSION" in
-	0.[0-5].*) return 1 ;;
-	*) return 0 ;;
-	esac
+	return 0 # Every fork production release requires a signature.
 }
 
 # An OpenSSL 3 or later: the one on PATH, or Homebrew's.
@@ -607,25 +599,18 @@ try { sums = f.readFileSync(process.argv[2]); ok = c.verify(null, sums, f.readFi
 if (!ok) process.exit(3);
 process.stdout.write("verified " + c.createHash("sha256").update(sums).digest("hex") + "\n");'
 
-# Whether the user let this download be installed without a signature check: PIBOLT_UNVERIFIED is the SHA-256 of its
-# SHA256SUMS, which no other download has (a value kept in a profile does not let another release in).
+# Fork signatures cannot be replaced with checksum-only opt-ins.
 unverified_allowed() {
-	[ -n "${PIBOLT_UNVERIFIED:-}" ] && [ "$(printf '%s' "$PIBOLT_UNVERIFIED" | tr 'A-F' 'a-f')" = "$SUMS_SHA256" ]
+	return 1 # A checksum opt-in cannot replace a fork release signature.
 }
 
-# fail_unverified WHY: stops, saying how to install this download all the same.
+# fail_unverified WHY: stop when no verifier can establish the fork signature.
 fail_unverified() {
-	if [ "$LAUNCHER" = 1 ]; then
-		fail "$1 Nothing was installed. Install Pi-Bolt with its installer instead (curl -fsSL https://pi-bolt.opensec.in/install.sh | sh), which says how to go on."
-	fi
-	case "$SHOWN_VERSION" in [0-9]*.[0-9]*.[0-9]*) page="$REPO/releases/tag/bolt-v$SHOWN_VERSION" ;; *) page="$REPO/releases/latest" ;; esac
-	stale=""
-	if [ -n "${PIBOLT_UNVERIFIED:-}" ]; then stale=" (PIBOLT_UNVERIFIED is set, but not to this download's SHA-256: it applies to one download only)"; fi
-	fail "$1 Nothing was installed$stale. To install this download without the check, compare the SHA-256 of its SHA256SUMS, $SUMS_SHA256, with the one GitHub shows for SHA256SUMS on $page from a device you trust, and run the installer again with PIBOLT_UNVERIFIED=$SUMS_SHA256."
+	fail "$1 A fork release signature must verify; checksum-only installation is disabled."
 }
 
 verify_signature() {
-	[ -n "$RELEASE_KEY" ] || return 0
+	[ -n "$RELEASE_KEY" ] || fail "the fork release signing key is not configured"
 	# (Whether it worked is whether the file is there: under set -e a failed wait would end the script without a word.)
 	if [ -n "$SIG_PID" ]; then wait "$SIG_PID" 2>/dev/null || true; fi
 	SUMS_SHA256=$(sha256_of "$TMP/SHA256SUMS")
