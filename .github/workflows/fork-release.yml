@@ -13,6 +13,11 @@ on:
         description: "Sign and publish a stable fork release (pi-bolt branch and protected environment required)"
         type: boolean
         default: false
+      release_title:
+        description: "Optional display title; does not change the numeric tag or internal version"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -150,6 +155,7 @@ jobs:
     env:
       SOURCE_COMMIT: ${{ needs.build.outputs.commit }}
       VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_TITLE: ${{ inputs.release_title || format('Pi-Bolt fork {0} (Linux x64)', needs.build.outputs.version) }}
     steps:
       # Trusted branch snapshot, not code from a tag or dependency, has access to the signing environment.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -202,4 +208,4 @@ jobs:
         run: |
           node scripts/fork-release.mjs verify --dir release --tag "$TAG" --commit "$SOURCE_COMMIT" --require-key --require-clean --signature
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$SOURCE_COMMIT" --latest \
-            --title "Pi-Bolt fork $VERSION (Linux x64)" --notes-file "docs/fork-releases/$VERSION.md" release/*
+            --title "$RELEASE_TITLE" --notes-file "docs/fork-releases/$VERSION.md" release/*

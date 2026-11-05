@@ -66,6 +66,9 @@ The explicit production operation is:
 gh workflow run fork-release.yml -R Coder-Sang/Pi-Bolt --ref pi-bolt -f tag=bolt-v1.0.10 -f publish=true
 ```
 
+An optional `-f release_title=1.0.9.a` changes only the GitHub display title. The tag, internal version, signed metadata and
+installation/update paths keep the numeric `1.0.10` version.
+
 The read-only build downloads the pinned verified runtime, builds all x64 variants and runs offline RPC and extension
 acceptance on each unpacked archive. Only a successful build can reach the protected publisher. It checks tag ancestry
 against its trusted branch snapshot, rechecks the remote tag, refuses any existing release including a draft, verifies all
