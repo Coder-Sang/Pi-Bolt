@@ -10,7 +10,11 @@ on:
         description: "Existing numeric production tag, exactly bolt-vVERSION"
         required: true
       publish:
-        description: "Sign and publish a stable fork release (pi-bolt branch and protected environment required)"
+        description: "Sign and publish a fork release (pi-bolt branch and release environment required)"
+        type: boolean
+        default: false
+      prerelease:
+        description: "Publish a signed build as a prerelease without changing the stable latest release"
         type: boolean
         default: false
       release_title:
@@ -156,6 +160,7 @@ jobs:
       SOURCE_COMMIT: ${{ needs.build.outputs.commit }}
       VERSION: ${{ needs.build.outputs.version }}
       RELEASE_TITLE: ${{ inputs.release_title || format('Pi-Bolt fork {0} (Linux x64)', needs.build.outputs.version) }}
+      PRERELEASE: ${{ inputs.prerelease || false }}
     steps:
       # Trusted branch snapshot, not code from a tag or dependency, has access to the signing environment.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -202,10 +207,11 @@ jobs:
           (umask 077 && printenv SIGNING_KEY > "$key")
           openssl pkey -in "$key" -pubout | cmp -s - keys/release.pub || { echo 'the secret is not the configured fork key'; exit 1; }
           scripts/sign-release.sh --key "$key" release
-      - name: Verify signed payload and publish stable release
+      - name: Verify signed payload and publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/fork-release.mjs verify --dir release --tag "$TAG" --commit "$SOURCE_COMMIT" --require-key --require-clean --signature
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$SOURCE_COMMIT" --latest \
+          if [ "$PRERELEASE" = true ]; then set -- --prerelease --latest=false; else set -- --latest; fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --target "$SOURCE_COMMIT" "$@" \
             --title "$RELEASE_TITLE" --notes-file "docs/fork-releases/$VERSION.md" release/*

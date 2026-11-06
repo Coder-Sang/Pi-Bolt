@@ -204,6 +204,7 @@ test("Linux installer accepts only the fork signature and never falls back to up
 test("production workflow defaults to candidates and isolates signing from build and inherited upstream publication", () => {
 	const workflow = parse(readFileSync(join(root, ".github/workflows/fork-release.yml"), "utf8"));
 	assert.equal(workflow.on.workflow_dispatch.inputs.publish.default, false);
+	assert.equal(workflow.on.workflow_dispatch.inputs.prerelease.default, false);
 	assert.deepEqual(workflow.jobs.build.permissions, { contents: "read" });
 	assert.doesNotMatch(JSON.stringify(workflow.jobs.build), /secrets\./);
 	assert.equal(workflow.jobs.publish.environment, "release");
@@ -228,4 +229,38 @@ test("production workflow defaults to candidates and isolates signing from build
 	}
 	const ci = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"));
 	for (const job of Object.values(ci.jobs)) assert.match(job.if, /github\.repository == 'opensec-git\/Pi-Bolt'/);
+});
+
+test("signed build publication preserves stable latest and verifies signatures before release creation", (t) => {
+	const workflow = parse(readFileSync(join(root, ".github/workflows/fork-release.yml"), "utf8"));
+	const publish = workflow.jobs.publish.steps.find((step) => step.name === "Verify signed payload and publish release");
+	const directory = temporary(t);
+	const commands = join(directory, "commands.jsonl");
+	const bin = join(directory, "bin");
+	mkdirSync(bin);
+	mkdirSync(join(directory, "release"));
+	writeFileSync(join(directory, "release/SHA256SUMS"), "fixture");
+	for (const name of ["node", "gh"]) {
+		writeFileSync(join(bin, name), `#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"], "a") as log: log.write(json.dumps([${JSON.stringify(name)}, *sys.argv[1:]]) + "\\n")\n`, { mode: 0o755 });
+	}
+	for (const prerelease of ["false", "true"]) {
+		writeFileSync(commands, "");
+		const title = "Pi-Bolt 1.1.1 Message ID build 1";
+		const commit = "b".repeat(40);
+		const result = spawnSync("bash", ["-e", "-c", publish.run], { cwd: directory, encoding: "utf8", env: {
+			...process.env, PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: commands, PRERELEASE: prerelease,
+			TAG: "bolt-v1.1.1", SOURCE_COMMIT: commit, GITHUB_REPOSITORY: "Coder-Sang/Pi-Bolt", VERSION: "1.1.1", RELEASE_TITLE: title,
+		} });
+		assert.equal(result.status, 0, result.stderr);
+		const [verify, release] = readFileSync(commands, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.equal(verify[0], "node");
+		for (const flag of ["--require-key", "--require-clean", "--signature"]) assert.ok(verify.includes(flag));
+		assert.deepEqual(release.slice(0, 4), ["gh", "release", "create", "bolt-v1.1.1"]);
+		assert.equal(release[release.indexOf("--title") + 1], title);
+		assert.equal(release[release.indexOf("--target") + 1], commit);
+		assert.ok(release.includes("--verify-tag"));
+		assert.equal(release.includes("--prerelease"), prerelease === "true");
+		assert.equal(release.includes("--latest=false"), prerelease === "true");
+		assert.equal(release.includes("--latest"), prerelease === "false");
+	}
 });

@@ -1,7 +1,7 @@
 # Fork Linux x64 releases
 
 The first production target is `Coder-Sang/Pi-Bolt`, branch `pi-bolt`, Linux x64. `VERSION`, `npm/package.json` and the
-launcher agree on `1.0.10`; Pi's source packages keep their independent upstream `1.4.0` version. Production tags are exactly
+launcher agree on `1.1.1`; Pi's source packages keep their independent upstream `1.5.0` version. Release tags are exactly
 `bolt-vVERSION` with three canonical numeric components. `bolt-vX.Y.Z-message` is a separate unsigned test prerelease path.
 Existing tags and releases are never moved, overwritten or used as a retry target for changed source.
 
@@ -69,11 +69,33 @@ gh workflow run fork-release.yml -R Coder-Sang/Pi-Bolt --ref pi-bolt -f tag=bolt
 An optional `-f release_title=1.0.9.a` changes only the GitHub display title. The tag, internal version, signed metadata and
 installation/update paths keep the numeric `1.0.10` version.
 
+### Signed Message ID builds
+
+The build based on upstream `bolt-v1.1.1` (commit `0c8faeb30b28671c9aac9ed8bdc62b3dda2dd462`) keeps the existing
+Message ID RPC contract and fork download/signing identity. Its tag and executable version are `bolt-v1.1.1` and `1.1.1`;
+the title identifies it as `Pi-Bolt 1.1.1 Message ID build 1`. Numeric tags remain compatible with existing installers and
+updaters. The build identifier is a display label, not SemVer build metadata. Each later build needs a new version/tag;
+published tags and assets are never reused or overwritten.
+
+Publish this tested build as a signed prerelease:
+
+```sh
+gh workflow run fork-release.yml -R Coder-Sang/Pi-Bolt --ref pi-bolt \
+  -f tag=bolt-v1.1.1 -f publish=true -f prerelease=true \
+  -f 'release_title=Pi-Bolt 1.1.1 Message ID build 1'
+```
+
+This adds `--prerelease --latest=false` to release creation, while retaining the same signature, provenance, source,
+clean-tree, branch and absent-release checks. The stable `latest` endpoint keeps the previous stable release. Install the
+build explicitly with `PIBOLT_VERSION=bolt-v1.1.1`, or select the beta channel; beta selects the highest numeric release
+including prereleases. Stable publication remains the default when `prerelease` is omitted.
+
 The read-only build downloads the pinned verified runtime, builds all x64 variants and runs offline RPC and extension
 acceptance on each unpacked archive. Only a successful build can reach the protected publisher. It checks tag ancestry
 against its trusted branch snapshot, rechecks the remote tag, refuses any existing release including a draft, verifies all
-payload files without a private key, then signs in its isolated signing step. It creates a stable release with `--verify-tag`
-and marks it latest so the fork's stable install/update endpoint resolves. Test prereleases continue to set `--latest=false`.
+payload files without a private key, then signs in its isolated signing step. It creates the selected release type with
+`--verify-tag`: stable releases become latest, and signed prerelease builds use `--latest=false`. Legacy unsigned test
+prereleases also retain `--latest=false`.
 Nothing publishes npm packages, an upstream website or package-manager feeds.
 
 The build has no OIDC or signing permissions. For an explicit production run only, a separate job attests the tested

@@ -1,17 +1,17 @@
 {
   "repository": "opensec-git/Pi-Bolt",
-  "tag": "bolt-v1.0.9",
+  "tag": "bolt-v1.1.1",
   "publicKey": "keys/upstream-runtime.pub",
   "runtimeStamp": "2e54e6641c78fd6d",
   "bunVersion": "1.4.3",
-  "checksumsSha256": "e1a2cafa92515f55777bc844fd34ac0f10e238efe2b1cfddf4f51a7a011e3cbb",
-  "signatureSha256": "ed369eb1c51cc388247bc47b1cbab4e7585826ef64a545f806e484f37fb39374",
+  "checksumsSha256": "0f145cf23b9aa639bdf45547ebcb207458daa95492ac3bae200ed1168309fe07",
+  "signatureSha256": "e249481dfea05421b08a1f9027da6d4fe3d9aa8139dc0053520ad87c24e84151",
   "attestation": {
     "signerWorkflow": "opensec-git/Pi-Bolt/.github/workflows/release.yml",
-    "sourceRef": "refs/tags/bolt-v1.0.9",
-    "sourceCommit": "739424a30d14afabc423ea1706f0f11c702eca9d"
+    "sourceRef": "refs/tags/bolt-v1.1.1",
+    "sourceCommit": "0c8faeb30b28671c9aac9ed8bdc62b3dda2dd462"
   },
   "archives": {
-    "linux-x64": "caf9d74d6f6203e893e0dcab6127959c9740b2afbe582affd73a82508b59cab8"
+    "linux-x64": "8d67847aa48e6e2c83aa801b6c00f2d8561e66322cd9fe48a16d31d0a77154c1"
   }
 }

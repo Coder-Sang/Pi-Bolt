@@ -35,17 +35,17 @@ jobs:
           node scripts/configure-fork-release.mjs --check
           npm run check
           node --test scripts/fork-release.test.mjs scripts/test-build-workflow.test.mjs scripts/npm-postinstall.test.mjs
-      - name: Message ID source regressions
-        run: |
-          (cd packages/agent && node ../../node_modules/vitest/dist/cli.js --run test/agent.test.ts test/agent-loop.test.ts)
-          (cd packages/coding-agent && node ../../node_modules/vitest/dist/cli.js --run test/rpc-prompt-response-semantics.test.ts test/suite/agent-session-message-id.test.ts test/rpc-client-clear-queue.test.ts)
-          (cd packages/coding-agent && node ../../node_modules/vitest/dist/cli.js --run test/pi-bolt-latest-version.test.ts test/pi-bolt-install-method.test.ts test/pi-bolt-jit-hint.test.ts test/pi-bolt-homebrew.test.ts test/pi-bolt-scoop.test.ts test/pi-bolt-installer.test.ts test/pi-bolt-update-rollback.test.ts)
       - name: Offline source build and pinned runtime
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           npm run build:offline
           scripts/fetch-runtime.sh --locked
+      - name: Message ID source regressions
+        run: |
+          (cd packages/agent && node ../../node_modules/vitest/dist/cli.js --run test/agent.test.ts test/agent-loop.test.ts)
+          (cd packages/coding-agent && node ../../node_modules/vitest/dist/cli.js --run test/rpc-prompt-response-semantics.test.ts test/suite/agent-session-message-id.test.ts test/rpc-client-clear-queue.test.ts)
+          (cd packages/coding-agent && node ../../node_modules/vitest/dist/cli.js --run test/pi-bolt-latest-version.test.ts test/pi-bolt-install-method.test.ts test/pi-bolt-jit-hint.test.ts test/pi-bolt-homebrew.test.ts test/pi-bolt-scoop.test.ts test/pi-bolt-installer.test.ts test/pi-bolt-update-rollback.test.ts)
       - name: Build baseline and run offline binary acceptance
         run: |
           scripts/build-pi.sh --cpu baseline --out out/pi-bolt-ci
