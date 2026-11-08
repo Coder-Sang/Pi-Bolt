@@ -21,6 +21,7 @@ import type {
 	MermaidRenderingMode,
 	PackageSource,
 	QuietStartup,
+	RemoteControlSettings,
 	SessionShareDestination,
 	Settings,
 	ThinkingBudgetsSettings,
@@ -1044,6 +1045,31 @@ export class SettingsManager {
 		return destination === "gist" || destination === "radius"
 			? destination
 			: SETTINGS_DEFAULTS.sessionShareDestination;
+	}
+
+	getRemoteControlSettings(): RemoteControlSettings {
+		const value = this.settings.remoteControl;
+		return value && typeof value === "object" ? value : {};
+	}
+
+	/** "Don't ask again" for /remote-control's offer to install cloudflared. */
+	setRemoteControlAskCloudflared(ask: boolean): void {
+		const current = this.globalSettings.remoteControl;
+		this.globalSettings.remoteControl = {
+			...(current && typeof current === "object" ? current : {}),
+			askCloudflared: ask,
+		};
+		this.markModified("remoteControl", "askCloudflared");
+		this.save();
+	}
+
+	/** The background service's tunnel (`pi-bolt service install --no-tunnel` sets "off"). */
+	setRemoteControlServiceTunnel(tunnel: NonNullable<RemoteControlSettings["tunnel"]>): void {
+		const current = this.globalSettings.remoteControl;
+		const remoteControl = current && typeof current === "object" ? current : {};
+		this.globalSettings.remoteControl = { ...remoteControl, service: { ...remoteControl.service, tunnel } };
+		this.markModified("remoteControl", "service");
+		this.save();
 	}
 
 	setSessionShareDestination(destination: SessionShareDestination): void {

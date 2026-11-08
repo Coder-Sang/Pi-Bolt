@@ -119,6 +119,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { type BeforeAgentStartTrigger, emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { registerLiveSession, unregisterLiveSession } from "./live-sessions.ts";
 import { createToolNameMatcher, isMcpToolName } from "./mcp-servers.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -637,6 +638,7 @@ export class AgentSession {
 			includeAllExtensionTools: true,
 		});
 		if (this._usesDefaultTools) this._restoreToolsFromTranscript(this._defaultToolModifiers);
+		registerLiveSession(this);
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -1672,6 +1674,7 @@ export class AgentSession {
 			this._cacheWarmer.cancel();
 		}
 		cleanupSessionResources(this.sessionId);
+		unregisterLiveSession(this);
 	}
 
 	// =========================================================================

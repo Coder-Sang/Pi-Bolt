@@ -1,7 +1,7 @@
 {
 	"name": "pi-bolt",
 	"private": true,
-	"version": "1.1.1",
+	"version": "1.1.5",
 	"description": "Coder-Sang/Pi-Bolt fork, Linux x64 distribution",
 	"keywords": [
 		"pi",

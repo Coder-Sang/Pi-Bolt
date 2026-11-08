@@ -4,7 +4,7 @@ This fork adds caller message IDs and ordered queue lifecycle events to Pi-Bolt.
 **Linux x64 with glibc**. The upstream compiler, Pi agent and licenses are retained; see [Architecture](docs/ARCHITECTURE.md)
 and [Third-party notices](THIRD_PARTY_NOTICES.md).
 
-Production candidate version: `1.0.10` (Pi `1.4.0`). The existing
+Message ID candidate version: `1.1.5` (Pi `1.5.0`), based on upstream `bolt-v1.1.5`. The existing
 [`bolt-v1.9.0-message` test prerelease](https://github.com/Coder-Sang/Pi-Bolt/releases/tag/bolt-v1.9.0-message) remains an
 unsigned test build of Pi-Bolt `1.0.9`.
 
@@ -43,8 +43,8 @@ scripts/fetch-runtime.sh --locked
 scripts/prepare-pi.sh
 scripts/package-release.sh
 python3 tests/pi/rpc-message-id.py "$PWD/out/pi-bolt-baseline/pi"
-node scripts/fork-release.mjs prepare --dir dist/1.0.10 --tag bolt-v1.0.10
-node scripts/fork-release.mjs verify --dir dist/1.0.10 --tag bolt-v1.0.10
+node scripts/fork-release.mjs prepare --dir dist/1.1.5 --tag bolt-v1.1.5
+node scripts/fork-release.mjs verify --dir dist/1.1.5 --tag bolt-v1.1.5
 ```
 
 The runtime is pinned in [`runtime-source.json`](runtime-source.json). It must verify with the independent upstream runtime

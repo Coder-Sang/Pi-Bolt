@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `pi-bolt service install` runs remote control as a background service of your user account: a LaunchAgent on macOS, a systemd user unit on Linux, a scheduled task at logon on Windows. Paired phones reach the computer with no terminal open, open its recent sessions, list its projects and sessions, and start sessions in projects used before. It is opt-in and needs no administrator rights. `uninstall` removes every file it wrote; `status` shows its addresses and phones; `pair` pairs a new phone with the running service; `logs` prints its log. It listens on the LAN and Tailscale on a fixed port (`remoteControl.port`, else 48123), and runs the tunnel of `remoteControl.service.tunnel` (default: `remoteControl.tunnel`; `install --no-tunnel` sets `"off"`). A terminal's `/remote-control` takes over its port and tunnel and hands them back when it stops. See [Background service](docs/remote-control.md#background-service)
+- Remote control sends phones the host's current addresses (`remote_endpoints`) when they connect and when the addresses change, so a quick tunnel's new address reaches a phone without a new QR code. Older apps ignore the message
+- Remote control offers read-only review of the session's folder: git status with line counts, diffs, history and commits, folder listings and file contents (`rc_git_status`, `rc_git_diff`, `rc_git_log`, `rc_git_show`, `rc_list_dir`, `rc_read_file`). Both `/remote-control` and `pi-bolt service` serve them and announce it with `host.review: true` in `remote_hello`. Paths stay inside the cwd after resolving symlinks, output is capped, and files that look like secrets (`.env*`, keys, `.git/`) are refused unless `remoteControl.readSecretFiles` is set. See [Review](docs/remote-control.md#review)
+- Remote control and RPC mode stream a subagent's own conversation while a client shows it: `subagent_subscribe { runId }` (the id of the `Agent` call) sends the subagent's saved messages (`subagent_entries`) and, while its session runs in this process, its streaming thinking, text and tool starts (`subagent_events`); `subagent_unsubscribe` stops it. Read-only, capped per message and per client, and advertised as `features: ["subagent_stream"]` in `remote_hello`. See [Subagent streams](docs/remote-control.md#subagent-streams)
+
+### Changed
+
+- Compiled binaries load jiti's Babel transform only when an extension file is not in jiti's cache yet. A start with extensions installed used to evaluate it every time: `pi -p` with one npm extension takes 12% fewer instructions, the TUI reaches its first frame with 19% fewer, and the process uses 4-6 MB less memory
+
+### Fixed
+
+- The background service no longer aborts a running turn when a phone opens another session or starts a new one. It keeps up to 3 sessions open, each with its own runtime: a session in a turn keeps running in the background, and opening it again shows it as it is. With all 3 running, the phone is told to stop one or wait. `remote_hello.host.parallelSessions` says the service does this, and `list_sessions` marks sessions as `open` and `running`
+- Remote control spends a pairing secret only when the phone completes the handshake (`remote_ready`), not when its first handshake message arrives. A phone whose connection timed out mid-handshake (the apps give each address 3 seconds; iOS's first connect can wait on the Local Network prompt) had used up its QR code, so its retry was refused and pairing needed a new code. The secret still pairs one phone: of two phones racing with it, the first to finish pairs and the other is refused
+- On the Bun runtime (Pi-Bolt), a `console.log` from an extension or a dependency in RPC, JSON, ACP or MCP mode (and `pi-bolt service`) no longer goes into the JSON stream on stdout, and in print mode (`-p`) no longer mixes with the answer. Bun's console methods (`log`, `info`, `debug`, `dir`, `dirxml`, `table`, `trace`, `count`, `group`, `write`) print to fd 1 without calling the replaced `process.stdout.write` ([oven-sh/bun#47982](https://github.com/oven-sh/bun/issues/47982)); while stdout is taken over they now print to stderr, formatted as on Node
+
 ## [1.5.0] - 2026-11-02
 
 ### New Features
