@@ -9,7 +9,7 @@
   "attestation": {
     "signerWorkflow": "opensec-git/Pi-Bolt/.github/workflows/release.yml",
     "sourceRef": "refs/tags/bolt-v1.1.5",
-    "sourceCommit": "cbbffab0f320c2d6dae1fc85e5e0f8d17e8b135d"
+    "sourceCommit": "ae783ad34109200d710fe928c5bd5c6f69fe7217"
   },
   "archives": {
     "linux-x64": "9217332d0d653114331344d978eb7404597bba9e7eb175056c2ee4b5616663e8"
