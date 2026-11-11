@@ -945,7 +945,8 @@ export function rewriteCopy(source, file) {
 				new RegExp(
 					[
 						`\\b(?:const|let|var|function|class)\\s+${name}\\b`,
-						`(?<![.\\w$])${name}\\s*=(?![=>])`,
+						// (Not a property or a private name: `this.#require = ...` declares nothing the module calls.)
+						`(?<![.#\\w$])${name}\\s*=(?![=>])`,
 						`\\bimport\\s*(?:\\*\\s*as\\s+)?${name}\\b`,
 						`\\bimport\\s*\\{[^}]*\\b${name}\\b`,
 						`[(,]\\s*${name}\\s*(?:[,=][^()]*)?\\)\\s*(?::[^=;{]*)?(?:=>|\\{)`,
@@ -1144,8 +1145,8 @@ export function rewriteCopy(source, file) {
 			const start = i;
 			for (i++; i < length && isWordChar(source[i]); i++);
 			const word = source.slice(start, i);
-			// (Not after a `.`: `x.import` is a property, not the keyword.)
-			const property = previous.kind === "punctuator" && previous.text === ".";
+			// (Not after a `.` or a `#`: `x.import` is a property and `this.#require` a private name, not the keyword.)
+			const property = previous.kind === "punctuator" && (previous.text === "." || previous.text === "#");
 			/** Replaces `source` from `start` to `end` with `code`, and goes on after it, `previous` being a value. */
 			const replace = (end, code) => {
 				// (Followed by the line breaks it spanned, if any, so that line numbers stay as they were.)
@@ -1223,8 +1224,9 @@ const isScript = (name) => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(name) && !/\.d\.[cm]?
 
 /**
  * Rewrites every script of `staged`, a copy of `original`, as the build is to have it (rewriteCopy): `import.meta` pinned
- * to the file it was copied from, and Pi's other names for its modules replaced. `original` is the path as Pi finds it, not
- * resolved through links: Pi loads an extension by that path, and so do the modules it imports.
+ * to the file it was copied from, and Pi's other names for its modules replaced. Each file is pinned to its real path,
+ * resolved through links: Pi's loader imports an extension by its real path (core/extensions/loader.ts, upstream #8112), and
+ * the modules it imports resolve from there (/var is /private/var on macOS).
  */
 function rewriteCopies(staged, original) {
 	for (const entry of readdirSync(staged, { withFileTypes: true })) {
@@ -1241,7 +1243,8 @@ function rewriteCopies(staged, original) {
 		const source = bytes.toString("utf8");
 		// (A file that is not UTF-8 is left as it is rather than rewritten with replacement characters.)
 		if (!Buffer.from(source, "utf8").equals(bytes)) continue;
-		const rewritten = rewriteCopy(source, join(original, entry.name));
+		const file = join(original, entry.name);
+		const rewritten = rewriteCopy(source, existsSync(file) ? realpathSync(file) : file);
 		if (rewritten === source) continue;
 		// (A copy keeps its file's mode, and an installed file may be read-only.)
 		chmodSync(path, statSync(path).mode | 0o200);

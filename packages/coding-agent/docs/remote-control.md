@@ -5,8 +5,24 @@ the live session (messages, thinking, tool calls and their output as they stream
 follow-ups, abort, switch model or thinking level, and answer the dialogs Pi raises. It can also [review](#review) the
 session's folder read-only: git status, diffs, history, and the files themselves.
 
-Nothing of this loads until the command runs. Without `/remote-control`, Pi behaves exactly as before. To reach the
-computer with no terminal open, install the [background service](#background-service).
+Remote control is off by default. Turn it on with:
+
+```bash
+pi-bolt remote-control enable
+```
+
+`pi-bolt remote-control disable` turns it off again, and `pi-bolt remote-control status` shows which it is. The command
+sets `remoteControl.enabled` in your global settings (`~/.pi/agent/settings.json`), which is also the "Remote control"
+toggle in `/settings`. A project's `.pi/settings.json` cannot turn it on. A session that is already open sees a change
+made with the command at `/reload`; the toggle in `/settings` applies at once. When a session sees remote control turned
+off while its `/remote-control` runs, it stops serving and says so.
+
+While it is off, `/remote-control` is not listed in autocomplete. Typing it prints
+`Remote control is off. Turn it on with: pi-bolt remote-control enable` and does nothing else. The
+[background service](#background-service) does not install or serve.
+
+Nothing of remote control loads until the command runs. To reach the computer with no terminal open, install the
+[background service](#background-service).
 
 ## Use
 
@@ -30,6 +46,7 @@ each time it starts, so a phone away from home needs the new QR code after a res
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `remoteControl.enabled` | `false` | Turns on `/remote-control` and the background service. Read from the global settings only; `pi-bolt remote-control enable` and `disable` set it. |
 | `remoteControl.port` | `0` (random) | Port for the local listener. A fixed port lets paired phones reconnect on the LAN without a new QR code. |
 | `remoteControl.tunnel` | `"quick"` | `"quick"` for a random `*.trycloudflare.com` address, `{ "name": "<tunnel>", "hostname": "<host>" }` for a named tunnel you configured with `cloudflared tunnel create` and a DNS route, or `"off"` for the local network only unless you run `/remote-control tunnel`. |
 | `remoteControl.cloudflared` | `"cloudflared"` | Path to the `cloudflared` executable. |
@@ -50,6 +67,20 @@ to it as they connect to `/remote-control`. They see the computer's most recent 
 sessions, open one, or start a new one in a project Pi-Bolt has worked in before. It is opt-in: nothing is installed until
 you run `pi-bolt service install`.
 
+`install` and `pair` need remote control on (`pi-bolt remote-control enable`); while it is off they print
+`Remote control is off. Turn it on with: pi-bolt remote-control enable` and change nothing. `uninstall`, `status` and
+`logs` work either way, and `status` says when it is off. A service that the service manager starts while remote control
+is off logs why it does not serve and exits without opening a port or a tunnel; it exits cleanly, so the service manager
+does not start it again until the next login. Turned off while it runs (serving, waiting for its port, or with its port
+handed to a terminal's `/remote-control`), the service exits within 10 seconds, and from the moment it sees the setting
+off it does not open its port or start a tunnel. After `pi-bolt remote-control enable`, run `pi-bolt service install` to
+start it again, or `pi-bolt service uninstall` to remove it.
+
+Installing or updating Pi-Bolt with the installers (`install.sh`, `install.ps1`) or `pi-bolt update` restarts a service
+that runs, so that it runs the new version; with remote control off it then exits. A service that does not run is not
+started, and nothing is installed. After an update through npm, Homebrew, Scoop or mise, `pi-bolt service restart` does
+the same.
+
 | Command | What it does |
 |---|---|
 | `pi-bolt service install [--no-tunnel]` | Start the service now and at every login. `--no-tunnel` sets `remoteControl.service.tunnel` to `"off"`. Run it again after changing a setting, or after installing `cloudflared`. |
@@ -57,6 +88,7 @@ you run `pi-bolt service install`.
 | `pi-bolt service status` | Show whether it runs, its port, addresses, tunnel and phones, plus a QR code with the current addresses. |
 | `pi-bolt service pair [--link]` | Pair a new phone with the running service: show a pairing QR code and wait until a phone uses it. `--link` also prints the link for "Paste pairing link". |
 | `pi-bolt service logs [-n <lines>] [-f]` | Print the service's log; `-f` follows it. |
+| `pi-bolt service restart` | Restart the service if it runs, so that it runs this version. It does nothing when the service is not installed or does not run. |
 
 What `install` writes. It all goes in your user account's own folders, and none of it needs administrator rights:
 
@@ -289,11 +321,16 @@ Host to client:
 | `response` | Answer to a client command, as in [RPC Commands](rpc-commands.md). |
 | `extension_ui_request` | A dialog (`select`, `confirm`, `input`, `editor`) or `notify`, as in [RPC Extension UI](rpc-extension-ui.md). The same dialog is open in the terminal; whichever side answers first wins. |
 | `extension_ui_dismissed` | `{ id }`: the dialog was answered in the terminal, timed out or was cancelled; the client closes it. |
+| `extension_ui_request` (views) | `setView`, `updateView` and `showView` of the [mobile UI kit](mobile-ui.md#protocol), to phones that sent `set_client_features` with `"views"`. `remote_hello` carries the current views as `views` (`[{ viewKey, slot, view, rev, toolCallId?, turn? }]`) to every phone, and `"views"` in `features`; open sheets are among its `dialogs`. |
 
-Client to host: `remote_ready` once, first; then RPC commands with an `id` for correlation, and `extension_ui_response`. Accepted commands: `prompt`,
+Client to host: `remote_ready` once, first; then RPC commands with an `id` for correlation, `extension_ui_response`, and
+`extension_ui_event` (a view's tap, change or submit, [mobile UI kit](mobile-ui.md#events)). `set_client_features` applies
+to that phone's connection only. Accepted commands: `set_client_features`, `prompt`,
 `steer`, `follow_up`, `abort`, `clear_queue`, `get_state`, `get_messages`, `get_available_models`, `set_model`,
 `cycle_model`, `get_available_thinking_levels`, `set_thinking_level`, `cycle_thinking_level`, `compact`, `abort_retry`,
-`get_session_stats`, `get_commands`, `get_last_assistant_text`, `set_session_name`, and the [review commands](#review)
+`get_session_stats`, `get_commands`, `get_last_assistant_text`, `set_session_name`, `get_pages`, `open_page`,
+`close_page` (the session's [package pages](mobile-ui.md#package-pages-and-home-tiles); `open_page` needs `"views"`), and
+the [review commands](#review)
 when `host.review` is true. Any other type gets
 `{ type: "response", success: false, error: "Not available over remote control" }`.
 

@@ -13,7 +13,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import opensec.pibolt.app.cost.SpendStore
 import opensec.pibolt.app.data.DeviceIdentity
@@ -23,7 +22,7 @@ import opensec.pibolt.app.data.RecentPrompts
 import opensec.pibolt.app.data.SettingsStore
 import opensec.pibolt.app.engine.EngineApi
 import opensec.pibolt.app.engine.LocalEngine
-import opensec.pibolt.app.engine.ModelsFile
+import opensec.pibolt.app.engine.PageEngine
 import opensec.pibolt.app.git.GitRunner
 import opensec.pibolt.app.git.ProcessGitRunner
 import opensec.pibolt.app.git.github.GitCredentialBroker
@@ -41,7 +40,7 @@ import opensec.pibolt.app.session.LiveRegistry
 import opensec.pibolt.app.session.RunMarks
 import opensec.pibolt.app.ui.chats.Chats
 import opensec.pibolt.app.ui.projects.LocalSessions
-import opensec.pibolt.app.ui.providers.ProviderCatalog
+import opensec.pibolt.app.ui.providers.ProviderDirectory
 import opensec.pibolt.app.session.SessionController
 import opensec.pibolt.app.session.SessionService
 import opensec.pibolt.app.ui.session.features2.SessionAlerts
@@ -111,6 +110,14 @@ class PiBoltApp : Application() {
     /** The engine on this phone: projects, local sessions, provider keys. */
     val engine: EngineApi get() = localEngine
 
+    /** Providers with keys, custom endpoints and those Pi packages register; which of them have a working model. */
+    val providers: ProviderDirectory by lazy {
+        ProviderDirectory(localEngine, File(noBackupFilesDir, "engine-providers.json"), CoroutineScope(SupervisorJob() + Dispatchers.IO))
+    }
+
+    /** Packages' pages and Home tiles without a session (docs/mobile-ui.md#package-pages-and-home-tiles). */
+    val pages: PageEngine by lazy { PageEngine(this, localEngine) }
+
     /** Work that outlives any screen, on the main thread (UI-side bookkeeping such as turn durations). */
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -170,8 +177,9 @@ class PiBoltApp : Application() {
         localEngine.prefetch()
         // Ready the engine (prefix check, spare process) before any screen asks for it. All of it runs on Dispatchers.IO.
         localEngine.prepare()
-        // Custom endpoints' names and marks (models.json), for the model picker and Settings before Providers opens.
-        appScope.launch(Dispatchers.IO) { ProviderCatalog.registerCustom(ModelsFile.custom(localEngine.agentDir)) }
+        // Custom endpoints' and extension providers' names and marks, and which providers have a working model, for
+        // Home, the model picker and Settings before Providers opens. The engine is asked once its spare is up.
+        providers.refresh()
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) {
                 if (startedActivities++ == 0) {
@@ -259,9 +267,20 @@ class PiBoltApp : Application() {
         // the next open after a quick look at another app a cold start. It stops a minute later unless the app is back.
         @Suppress("DEPRECATION")
         when {
-            level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ->
+            level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> {
                 localEngine.trimMemory("trim level $level", critical = true)
-            level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE -> localEngine.trimMemory("trim level $level")
+                pages.trim(critical = true)
+            }
+            // Sent while the app is in front: a package page on screen keeps its engine (it stopped and the page hung
+            // on "Opening"); one that only serves Home tiles still stops.
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> {
+                localEngine.trimMemory("trim level $level", critical = true)
+                pages.trim(critical = false)
+            }
+            level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE -> {
+                localEngine.trimMemory("trim level $level")
+                pages.trim(critical = false)
+            }
             level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> localEngine.trimSoon("trim level $level")
         }
     }
@@ -271,6 +290,7 @@ class PiBoltApp : Application() {
         @Suppress("DEPRECATION")
         super.onLowMemory()
         localEngine.trimMemory("low memory", critical = true)
+        pages.trim(critical = true)
     }
 
     /**

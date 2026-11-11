@@ -55,6 +55,9 @@ import opensec.pibolt.protocol.rpc.thinkingLevels
 import opensec.pibolt.protocol.session.AssistantTextItem
 import opensec.pibolt.protocol.session.SUBAGENT_STREAM_FEATURE
 import opensec.pibolt.protocol.session.SessionReducer
+import opensec.pibolt.protocol.session.VIEWS_FEATURE
+import opensec.pibolt.protocol.session.MobileViews
+import opensec.pibolt.protocol.session.PageInfo
 import opensec.pibolt.protocol.session.SubagentReducer
 import opensec.pibolt.app.ui.session.ask.AskReply
 import opensec.pibolt.app.ui.session.ask.AskResponder
@@ -186,6 +189,11 @@ class SessionController private constructor(
 
     private val _link = MutableStateFlow<LinkState>(LinkState.Connecting)
     val link: StateFlow<LinkState> = _link.asStateFlow()
+
+    private val _registeredPages = MutableStateFlow<List<PageInfo>>(emptyList())
+
+    /** The pages packages registered in this session (`get_pages`): the session's menu opens them with [openPage]. */
+    val registeredPages: StateFlow<List<PageInfo>> = _registeredPages.asStateFlow()
 
     private val _effects = MutableSharedFlow<SessionEffect>(extraBufferCapacity = 64)
     val effects: SharedFlow<SessionEffect> = _effects.asSharedFlow()
@@ -575,7 +583,7 @@ class SessionController private constructor(
             "extension_ui_request" -> when (event.str("method")) {
                 "notify" -> _effects.tryEmit(SessionEffect.Notify(event.str("message").orEmpty(), event.str("notifyType") ?: "info"))
                 "set_editor_text" -> _effects.tryEmit(SessionEffect.EditorText(event.str("text").orEmpty()))
-                "select", "confirm", "input", "editor" -> if (!app.isForeground) {
+                "select", "confirm", "input", "editor", "showView" -> if (!app.isForeground) {
                     SessionReducer.dialogFrom(event)?.let { Notifications.needsAnswer(app, this, it) }
                 }
             }
@@ -588,6 +596,14 @@ class SessionController private constructor(
                 scope.launch { refreshState() }
             }
             "remote_hello" -> {
+                // Extensions' views (the mobile UI kit) drawn natively: Pi sends them all again after this, as the
+                // snapshot of a rebuilt transcript lacks them. A computer before the kit refuses, and keeps text.
+                scope.launch {
+                    val features = rpc.setClientFeatures(listOf(VIEWS_FEATURE))
+                    // Packages' registered pages, for the session's menu. A host before them refuses `get_pages`.
+                    val pages = if (features.success) rpc.getPages().takeIf { it.success }?.let { MobileViews.pages(it.dataObject) } else null
+                    _registeredPages.value = pages.orEmpty().filterNot { it.isTile }
+                }
                 // The computer forgot this phone's subagent streams (a new connection or session): ask again.
                 val watched = watchedSubagents.value
                 if (watched.isNotEmpty()) {
@@ -1055,6 +1071,26 @@ class SessionController private constructor(
     fun confirm(id: String, confirmed: Boolean) = answered(id, rpc.respondConfirm(id, confirmed))
 
     fun cancelDialog(id: String) = answered(id, rpc.respondCancel(id))
+
+    /** Closes a sheet of the mobile UI kit with its submitted form or pressed action [nodeId] and its field [values]. */
+    fun answerView(id: String, nodeId: String, values: JsonObject) = answered(id, rpc.respondView(id, nodeId, values))
+
+    /** Builds the registered page [key]; its view arrives in [state] (slot `page`). False with an error effect when not. */
+    suspend fun openPage(key: String): Boolean {
+        val response = rpc.openPage(key)
+        if (!response.success) _effects.tryEmit(SessionEffect.Error(response.error ?: "Could not open the page"))
+        return response.success
+    }
+
+    /** The registered page [key] closed on the phone: Pi removes its view and tells the extension. */
+    fun closePage(key: String) {
+        scope.launch { rpc.closePage(key) }
+    }
+
+    /** A view's tap, committed field value or form submit, for the extension (docs/mobile-ui.md#events). */
+    fun viewEvent(viewKey: String, nodeId: String, kind: String, value: JsonPrimitive? = null, values: JsonObject? = null) {
+        if (!rpc.viewEvent(viewKey, nodeId, kind, value, values)) _effects.tryEmit(SessionEffect.Error("Not connected"))
+    }
 
     private fun answered(id: String, sent: Boolean) {
         if (sent) mutate { s -> s.copy(dialogs = s.dialogs.filterNot { it.id == id }) }

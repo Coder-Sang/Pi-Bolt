@@ -216,6 +216,34 @@ class RpcClient(private val backend: SessionBackend, scope: CoroutineScope) {
     fun respondConfirm(id: String, confirmed: Boolean): Boolean =
         backend.send(buildJsonObject { put("type", "extension_ui_response"); put("id", id); put("confirmed", confirmed) })
 
+    /** Optional protocol parts this app implements (`set_client_features`): the mobile UI kit's "views". */
+    suspend fun setClientFeatures(features: List<String>) = request("set_client_features") {
+        put("features", JsonArray(features.map(::JsonPrimitive)))
+    }
+
+    /** The pages and Home tiles packages registered (docs/mobile-ui.md#package-pages-and-home-tiles). */
+    suspend fun getPages() = request("get_pages")
+
+    /** Builds the registered page or tile [key]; its view arrives as a `setView` before the response. */
+    suspend fun openPage(key: String) = request("open_page", timeoutMs = 60_000) { put("key", key) }
+
+    suspend fun closePage(key: String) = request("close_page") { put("key", key) }
+
+    /** A view's tap, committed field value (`change`) or form submit (docs/mobile-ui.md#events). No response. */
+    fun viewEvent(viewKey: String, nodeId: String, kind: String, value: JsonPrimitive? = null, values: JsonObject? = null): Boolean =
+        backend.send(buildJsonObject {
+            put("type", "extension_ui_event")
+            put("viewKey", viewKey)
+            put("nodeId", nodeId)
+            put("kind", kind)
+            value?.let { put("value", it) }
+            values?.let { put("values", it) }
+        })
+
+    /** Closes a sheet (`showView`) with the submitted form or pressed action [nodeId] and the sheet's field [values]. */
+    fun respondView(id: String, nodeId: String, values: JsonObject): Boolean =
+        backend.send(buildJsonObject { put("type", "extension_ui_response"); put("id", id); put("nodeId", nodeId); put("values", values) })
+
     fun respondCancel(id: String): Boolean =
         backend.send(buildJsonObject { put("type", "extension_ui_response"); put("id", id); put("cancelled", true) })
 

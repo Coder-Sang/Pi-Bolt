@@ -9,15 +9,18 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { AgentSession } from "../core/agent-session.ts";
+import type { ViewClientEvent, ViewRequest, ViewSheetAnswer, ViewShowRequest } from "../core/mobile-ui/host.ts";
+import { VIEWS_FEATURE } from "../core/mobile-ui/types.ts";
 import { SUBAGENT_STREAM_FEATURE, SubagentStreams, type SubagentStreamsOptions } from "../core/subagent-stream.ts";
 import { toJsonEvent } from "../modes/json-event.ts";
-import type {
-	RpcCommand,
-	RpcExtensionUIRequest,
-	RpcExtensionUIResponse,
-	RpcResponse,
-	RpcSessionState,
-	RpcSlashCommand,
+import {
+	type RpcCommand,
+	type RpcExtensionUIRequest,
+	type RpcExtensionUIResponse,
+	type RpcResponse,
+	type RpcSessionState,
+	type RpcSlashCommand,
+	rpcPages,
 } from "../modes/rpc/rpc-types.ts";
 import { IkResponder, type KeyPair, type TransportKeys } from "./noise.ts";
 import {
@@ -78,15 +81,20 @@ const REMOTE_COMMANDS = new Set<RpcCommand["type"]>([
 	"get_commands",
 	"get_last_assistant_text",
 	"set_session_name",
+	"get_pages",
+	"open_page",
+	"close_page",
 ]);
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-/** A dialog as sent to phones, without the id and type the server adds. */
-export type RemoteDialogRequest = DistributiveOmit<
-	Extract<RpcExtensionUIRequest, { method: "select" | "confirm" | "input" | "editor" }>,
-	"id" | "type"
->;
+/** A dialog as sent to phones, without the id and type the server adds: a dialog method or a sheet (`showView`). */
+export type RemoteDialogRequest =
+	| DistributiveOmit<
+			Extract<RpcExtensionUIRequest, { method: "select" | "confirm" | "input" | "editor" }>,
+			"id" | "type"
+	  >
+	| ViewShowRequest;
 
 export interface RemoteClientInfo {
 	id: string;
@@ -178,6 +186,8 @@ class RemoteConnection {
 	private readonly server: RemoteControlServer;
 	/** Subagent runs this phone follows (`subagent_subscribe`), made on the first. */
 	private subagentStreams: SubagentStreams | undefined;
+	/** Optional protocol parts this phone implements (`set_client_features`), such as "views". */
+	features: ReadonlySet<string> = new Set();
 
 	constructor(socket: WebSocket, address: string, server: RemoteControlServer) {
 		this.socket = socket;
@@ -719,7 +729,9 @@ export class RemoteControlServer {
 			dialogs: [...this.dialogs.values()].map((dialog) => dialog.request),
 			commands: this.commands(session),
 			omittedMessages: 0,
-			features: [SUBAGENT_STREAM_FEATURE],
+			features: [SUBAGENT_STREAM_FEATURE, VIEWS_FEATURE],
+			// The mobile UI kit's views of the session now (docs/mobile-ui.md); clients without it ignore them.
+			views: session.extensionRunner.viewSnapshot(),
 		};
 		// Newest messages first, while they fit; a client would refuse the whole snapshot otherwise.
 		let budget = (this.options.helloBudgetBytes ?? HELLO_BUDGET_BYTES) - Buffer.byteLength(JSON.stringify(hello));
@@ -772,6 +784,36 @@ export class RemoteControlServer {
 		this.broadcast({ type: "extension_ui_request", id: randomUUID(), method: "notify", message, notifyType });
 	}
 
+	/** A sheet (`showView`) on the phones, as a dialog: the first phone's answer, or undefined once `signal` aborts. */
+	async requestViewSheet(request: ViewShowRequest, signal?: AbortSignal): Promise<ViewSheetAnswer | undefined> {
+		const response = await this.requestDialog(request, signal);
+		return response && ("nodeId" in response || "cancelled" in response) ? response : undefined;
+	}
+
+	/** An open sheet changed: phones that connect from now on get it as it is now, in `remote_hello.dialogs`. */
+	updateViewSheet(viewKey: string, view: unknown, rev: number): void {
+		for (const dialog of this.dialogs.values()) {
+			const request = dialog.request as { method?: string; viewKey?: string; view?: unknown; rev?: number };
+			if (request.method === "showView" && request.viewKey === viewKey) {
+				request.view = view;
+				request.rev = rev;
+			}
+		}
+	}
+
+	/** A connected phone renders views (it declared "views"). */
+	hasViewClients(): boolean {
+		return [...this.connections].some((connection) => connection.isOpen && connection.features.has(VIEWS_FEATURE));
+	}
+
+	/** A view change, to the phones that render views. */
+	sendView(request: ViewRequest): void {
+		const message = { type: "extension_ui_request", id: randomUUID(), ...request };
+		for (const connection of this.connections) {
+			if (connection.isOpen && connection.features.has(VIEWS_FEATURE)) connection.send(message);
+		}
+	}
+
 	async handleClientMessage(connection: RemoteConnection, message: unknown): Promise<void> {
 		// A revoked device (here, or by another Pi on this machine editing devices.json) runs nothing more.
 		const device = connection.device;
@@ -794,7 +836,25 @@ export class RemoteControlServer {
 			}
 			return;
 		}
+		if (typed.type === "extension_ui_event") {
+			this.options.getSession()?.extensionRunner.handleViewEvent(message as ViewClientEvent);
+			return;
+		}
 		const id = typeof typed.id === "string" ? typed.id : undefined;
+		if (typed.type === "set_client_features") {
+			const requested = (message as { features?: unknown }).features;
+			const accepted = Array.isArray(requested) && requested.includes(VIEWS_FEATURE) ? [VIEWS_FEATURE] : [];
+			const enabled = accepted.length > 0 && !connection.features.has(VIEWS_FEATURE);
+			connection.features = new Set(accepted);
+			connection.send({ id, type: "response", command: typed.type, success: true, data: { features: accepted } });
+			// Changes since its remote_hello skipped this phone: it gets every view as it is now.
+			if (enabled) {
+				for (const view of this.options.getSession()?.extensionRunner.viewSnapshot() ?? []) {
+					connection.send({ type: "extension_ui_request", id: randomUUID(), ...view, method: "setView" });
+				}
+			}
+			return;
+		}
 		if (typed.type === "subagent_subscribe" || typed.type === "subagent_unsubscribe") {
 			const runId = (message as { runId?: unknown }).runId;
 			try {
@@ -836,6 +896,16 @@ export class RemoteControlServer {
 				command: typed.type,
 				success: false,
 				error: "Not available over remote control",
+			});
+			return;
+		}
+		if (typed.type === "open_page" && !connection.features.has(VIEWS_FEATURE)) {
+			connection.send({
+				id,
+				type: "response",
+				command: typed.type,
+				success: false,
+				error: 'Send set_client_features with "views" first',
 			});
 			return;
 		}
@@ -937,6 +1007,14 @@ export class RemoteControlServer {
 				session.setSessionName(name);
 				return ok();
 			}
+			case "get_pages":
+				return ok({ pages: rpcPages(session.extensionRunner.getRegisteredPages()) });
+			case "open_page":
+				await session.extensionRunner.openPage(command.key);
+				return ok({ viewKey: command.key });
+			case "close_page":
+				await session.extensionRunner.closePage(command.key);
+				return ok();
 			default:
 				return fail("Not available over remote control");
 		}

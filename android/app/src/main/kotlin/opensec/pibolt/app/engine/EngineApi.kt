@@ -53,9 +53,32 @@ interface EngineApi {
 
     /**
      * Runs the engine as Pi's command line (`pi list`, `pi install …`, `pi mcp list --json`) in [cwd] (HOME when
-     * null) and returns its exit code and output. Not available where the engine is not.
+     * null) and returns its exit code and output. [env] adds variables for this run only, from [CLI_ENV] (the private
+     * registry's `.npmrc`, ui/packages/PrivateRegistry); others are ignored. Not available where the engine is not.
      */
-    suspend fun cli(args: List<String>, cwd: File? = null, timeoutMs: Long = 180_000): CliResult = CliResult(-1, "", "The engine is not available on this phone")
+    suspend fun cli(args: List<String>, cwd: File? = null, timeoutMs: Long = 180_000, env: Map<String, String> = emptyMap()): CliResult =
+        CliResult(-1, "", "The engine is not available on this phone")
+
+    companion object {
+        /** The variables [cli] lets a caller set. */
+        val CLI_ENV = setOf("npm_config_globalconfig")
+    }
+
+    /**
+     * The engine's providers, built-in, from extensions and custom, with their auth and the models that work now (Pi's
+     * `get_providers`, or the app's helper extension on engines before 1.1.7). Asks an engine the app keeps idle, never
+     * a session's. Null when no engine could answer.
+     */
+    suspend fun providers(): ProviderReport? = null
+
+    /**
+     * Starts [provider]'s own login flow ([method] "oauth" or "api_key") in an engine the app keeps for itself; the
+     * credential is saved to Pi's auth.json. Null where the engine is not available.
+     */
+    fun login(provider: String, method: String): ProviderLogin? = null
+
+    /** Packages were installed, removed or switched on or off: idle engines start again with them. */
+    fun packagesChanged() {}
 
     /** The language runtimes this build ships and the space npm and pip use. Blocking file I/O: call off the main thread. */
     fun runtimes(): RuntimesReport

@@ -203,6 +203,43 @@ describe("AgentSession prompt characterization", () => {
 		});
 	});
 
+	it.each(["steer", "followUp"] as const)("keeps %s input IDs through queued image normalization", async (source) => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.session.agent.steeringMode = "all";
+		harness.session.agent.followUpMode = "all";
+		await harness.session[source]("same text", [{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }], {
+			messageId: "private-image-input",
+		});
+		await harness.session[source]("same text", undefined, { messageId: "private-text-input" });
+		const requests: string[] = [];
+		const response = (context: TranscriptContext) => {
+			requests.push(JSON.stringify(context));
+			return fauxAssistantMessage("done");
+		};
+		harness.setResponses([response, response]);
+
+		await harness.session.prompt("start", { messageId: "private-initial-input" });
+
+		expect(processImage).toHaveBeenCalledTimes(1);
+		expect(harness.session.messages.filter((message) => message.role === "user")[1]?.content).toContainEqual({
+			type: "image",
+			data: Buffer.from("normalized").toString("base64"),
+			mimeType: "image/png",
+		});
+		expect(
+			harness
+				.eventsOfType("queue_update")
+				.flatMap((event) =>
+					event.tracking?.change.reason === "consume" ? [[...event.tracking.change.messageIds]] : [],
+				),
+		).toEqual([["private-image-input", "private-text-input"]]);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		for (const serialized of [...requests, JSON.stringify(harness.sessionManager.getEntries())]) {
+			expect(serialized).not.toContain("private-");
+		}
+	});
+
 	it("expands skill commands before sending the prompt", async () => {
 		const tempDir = join(tmpdir(), `pi-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
@@ -281,6 +318,20 @@ describe("AgentSession prompt characterization", () => {
 		await harness.session.prompt("/review src/index.ts");
 
 		expect(expandedPrompt).toBe("Review this code: src/index.ts");
+	});
+
+	it("asks for prompt templates only for text that starts with /", async () => {
+		// The resource loader reads template files at their first use: a prompt that cannot name one must not read them.
+		const getPrompts = vi.fn(() => ({ prompts: [], diagnostics: [] }));
+		const harness = await createHarness({ resourceLoader: { ...createTestResourceLoader(), getPrompts } });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok"), fauxAssistantMessage("ok")]);
+
+		await harness.session.prompt("hello /review");
+		expect(getPrompts).not.toHaveBeenCalled();
+
+		await harness.session.prompt("/review src/index.ts");
+		expect(getPrompts).toHaveBeenCalled();
 	});
 
 	it("sendUserMessage can opt into prompt template expansion", async () => {

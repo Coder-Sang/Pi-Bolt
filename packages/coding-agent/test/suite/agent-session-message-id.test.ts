@@ -113,9 +113,17 @@ describe("AgentSession input IDs", () => {
 		});
 		harnesses.push(harness);
 		await harness.session.steer("original", undefined, { messageId: "private-transform-id" });
-		await harness.session.followUp("", [{ type: "image", data: "AA==", mimeType: "image/png" }], {
-			messageId: "private-image-id",
-		});
+		await harness.session.followUp(
+			"",
+			[
+				{
+					type: "image",
+					data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==",
+					mimeType: "image/png",
+				},
+			],
+			{ messageId: "private-image-id" },
+		);
 		const requests: string[] = [];
 		const response: FauxResponseFactory = (context) => {
 			requests.push(JSON.stringify(context));

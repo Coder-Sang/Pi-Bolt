@@ -61,6 +61,11 @@ import java.io.File
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import opensec.pibolt.app.engine.PageCatalog
+import opensec.pibolt.app.ui.packages.PackagePageSheet
+import opensec.pibolt.app.ui.session.views.ViewHomeTile
+import opensec.pibolt.protocol.session.PageInfo
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -205,8 +210,10 @@ fun HomeScreen(
     val snackbar = remember { SnackbarHostState() }
 
     val status by engine.status.collectAsStateWithLifecycle()
-    val configured by engine.auth.configured.collectAsStateWithLifecycle()
-    val authLoaded by engine.auth.loaded.collectAsStateWithLifecycle()
+    // Providers with a working model: a key, a custom endpoint, or a provider a Pi package registers (ProviderDirectory).
+    val configured by app.providers.connected.collectAsStateWithLifecycle()
+    val stored by engine.auth.configured.collectAsStateWithLifecycle()
+    val authLoaded by app.providers.loaded.collectAsStateWithLifecycle()
     val meta by store.state.collectAsStateWithLifecycle()
     val metaLoaded by store.loaded.collectAsStateWithLifecycle()
     val hosts by app.hosts.hosts.collectAsStateWithLifecycle()
@@ -239,6 +246,7 @@ fun HomeScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         reload++
         Chats.refresh()
+        app.providers.refreshIfOlder()
     }
     // Plain chats (ui/chats): the newest in Recents, all of them behind the Chats row.
     val chats by remember(engine) { Chats.list(engine) }.collectAsStateWithLifecycle(emptyList())
@@ -298,6 +306,19 @@ fun HomeScreen(
     var spendSheet by remember { mutableStateOf(false) }
     var spendLimits by remember { mutableStateOf(false) }
     var sheetList by remember { mutableStateOf<HomeList?>(null) }
+    // Packages' live tiles (docs/mobile-ui.md#package-pages-and-home-tiles): only those turned on in Packages, served by
+    // the page engine while Home is in front; a tap opens the tile's page.
+    val appSettings by app.settings.settings.collectAsStateWithLifecycle()
+    val registered by app.pages.pages.collectAsStateWithLifecycle()
+    val pageState by app.pages.state.collectAsStateWithLifecycle()
+    val packageTiles = remember(registered, appSettings.homeTiles) { PageCatalog.shownTiles(registered.orEmpty(), appSettings.homeTiles) }
+    var packagePage by remember { mutableStateOf<PageInfo?>(null) }
+    LaunchedEffect(appSettings.homeTiles.isNotEmpty()) { if (appSettings.homeTiles.isNotEmpty()) app.pages.refreshPages() }
+    val tileKeys = packageTiles.map { it.key }.toSet()
+    LifecycleResumeEffect(tileKeys) {
+        app.pages.showTiles(tileKeys)
+        onPauseOrDispose { app.pages.showTiles(emptySet()) }
+    }
     var addComputer by remember { mutableStateOf(false) }
     var managing by remember { mutableStateOf<Pair<String, String>?>(null) }
     var onboarding by remember { mutableStateOf(false) }
@@ -547,6 +568,30 @@ fun HomeScreen(
                                 // One height per row, so a label that wraps at a large font scale keeps the pair even.
                                 Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
                                     for (tile in row) tile(Modifier.weight(1f).fillMaxHeight())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (packageTiles.isNotEmpty()) {
+                item(key = "package-tiles", contentType = "package-tiles") {
+                    BoxWithConstraints(Modifier.animateItem().padding(horizontal = Space.page).padding(bottom = Space.sm)) {
+                        val perRow = if (maxWidth >= 600.dp) 4 else 2
+                        Column(verticalArrangement = Arrangement.spacedBy(Space.md)) {
+                            for (row in packageTiles.chunked(perRow)) {
+                                Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                                    for (tile in row) {
+                                        val page = tile.page?.let { key -> registered.orEmpty().firstOrNull { it.key == key && !it.isTile } }
+                                        ViewHomeTile(
+                                            tile.title,
+                                            tile.icon,
+                                            pageState.views[tile.key]?.view,
+                                            onOpen = page?.let { p -> { packagePage = p } },
+                                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                                        )
+                                    }
+                                    repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
                                 }
                             }
                         }
@@ -854,7 +899,7 @@ fun HomeScreen(
     if (onboarding || addProvider) {
         ProviderSheet(
             auth = engine.auth,
-            configured = configured,
+            configured = stored,
             firstRun = onboarding,
             onSaved = { p ->
                 onboarding = false
@@ -896,6 +941,7 @@ fun HomeScreen(
             )
         }
     }
+    packagePage?.let { page -> PackagePageSheet(app.pages, page.key, page.title, onClose = { packagePage = null }) }
     sheetList?.let { which ->
         HomeListSheet(
             which = which,

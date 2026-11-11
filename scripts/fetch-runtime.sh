@@ -20,7 +20,7 @@ while [ $# -gt 0 ]; do
 done
 need curl
 if [ -n "$LOCKED" ]; then
-	locked=$(python3 - "$PIBOLT_ROOT/runtime-source.json" "$PIBOLT_PLATFORM" <<'PY'
+	locked=$(python3 - "$PIBOLT_ROOT/runtime-source.json" "$PIBOLT_RELEASE_PLATFORM" <<'PY'
 import json, re, sys
 source = json.load(open(sys.argv[1]))
 assert source["repository"] == "opensec-git/Pi-Bolt" and source["publicKey"] == "keys/upstream-runtime.pub"
@@ -45,7 +45,7 @@ TAG=${TAG:-latest}
 REPO="https://github.com/opensec-git/Pi-Bolt"
 if [ "$TAG" = latest ]; then BASE="$REPO/releases/latest/download"; else BASE="$REPO/releases/download/$TAG"; fi
 BASE="${PIBOLT_DOWNLOAD_BASE:-$BASE}"
-NAME=pi-bolt-runtime-$PIBOLT_PLATFORM.tar.gz
+NAME=pi-bolt-runtime-$PIBOLT_RELEASE_PLATFORM.tar.gz
 
 # verify_signature FILE SIG KEY: dies unless SIG is KEY's signature of FILE.
 verify_signature() {
@@ -93,19 +93,20 @@ if [ -n "$LOCKED" ]; then
 		--source-digest "$source_commit" --deny-self-hosted-runners --bundle "$TMP/provenance.jsonl" || die "the locked upstream runtime's build provenance does not verify"
 fi
 tar -C "$TMP" -xzf "$TMP/$NAME"
-# Which engine it is, as the release's signed checksums give it (scripts/build-pi.sh records it, for `pi-bolt doctor`).
-if curl -fsSL -o "$TMP/RUNTIME_STAMP" "$BASE/RUNTIME_STAMP" 2>/dev/null && check_sum "$TMP" RUNTIME_STAMP; then
+# The musl archive carries its own stamp; other platforms use the release's signed RUNTIME_STAMP.
+stamp_verified=""
+if [ -n "$PIBOLT_LIBC" ]; then
+	if cp "$TMP/pi-bolt-runtime-$PIBOLT_RELEASE_PLATFORM/RUNTIME_STAMP" "$TMP/RUNTIME_STAMP"; then stamp_verified=1; fi
+elif curl -fsSL -o "$TMP/RUNTIME_STAMP" "$BASE/RUNTIME_STAMP" 2>/dev/null && check_sum "$TMP" RUNTIME_STAMP; then
 	stamp_verified=1
-else
-	stamp_verified=""
 fi
 if [ -n "$LOCKED" ]; then
 	[ -n "$stamp_verified" ] && [ "$(cat "$TMP/RUNTIME_STAMP")" = "$expected_stamp" ] || die "missing or mismatched signed runtime stamp"
-	[ "$("$TMP/pi-bolt-runtime-$PIBOLT_PLATFORM/bun" --version)" = "$expected_version" ] || die "the runtime's Bun version differs from runtime-source.json"
+	[ "$("$TMP/pi-bolt-runtime-$PIBOLT_RELEASE_PLATFORM/bun" --version)" = "$expected_version" ] || die "the runtime's Bun version differs from runtime-source.json"
 fi
 # Do not replace a usable runtime when any upstream verification fails.
 mkdir -p "$PIBOLT_WORK/runtime"
-install -m 755 "$TMP/pi-bolt-runtime-$PIBOLT_PLATFORM/bun" "$PIBOLT_WORK/runtime/bun.part"
+install -m 755 "$TMP/pi-bolt-runtime-$PIBOLT_RELEASE_PLATFORM/bun" "$PIBOLT_WORK/runtime/bun.part"
 mv "$PIBOLT_WORK/runtime/bun.part" "$PIBOLT_WORK/runtime/bun"
 if [ -n "$stamp_verified" ]; then
 	cp "$TMP/RUNTIME_STAMP" "$PIBOLT_WORK/runtime/RUNTIME_STAMP"

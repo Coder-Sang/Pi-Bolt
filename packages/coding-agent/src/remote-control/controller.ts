@@ -7,6 +7,7 @@
 import { hostname, networkInterfaces } from "node:os";
 import type { AgentSession } from "../core/agent-session.ts";
 import type { ExtensionUIDialogOptions } from "../core/extensions/index.ts";
+import type { ViewRequest, ViewSheetAnswer, ViewShowRequest } from "../core/mobile-ui/host.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import type { RpcExtensionUIResponse } from "../modes/rpc/rpc-types.ts";
 import { WEBSOCKET_PATH } from "./protocol.ts";
@@ -120,6 +121,10 @@ export class RemoteControlController {
 	private claim: RemoteControlClaim | undefined;
 	/** The background service's tunnel, when this terminal took it over with the port. */
 	private adoptedTunnel: Tunnel | undefined;
+	/** Bumped by `stop`: a start still awaiting the claim, the listener or the tunnel gives up when it resumes. */
+	private startGeneration = 0;
+	/** Starts not finished yet. */
+	private starting = 0;
 
 	constructor(host: RemoteControlHost, deps: Partial<RemoteControlDeps> = {}) {
 		this.host = host;
@@ -135,6 +140,19 @@ export class RemoteControlController {
 
 	get running(): boolean {
 		return this.server?.running ?? false;
+	}
+
+	/** Serving, or a start is under way (waiting for the background service, the listener or the tunnel). */
+	get active(): boolean {
+		return this.server !== undefined || this.starting > 0;
+	}
+
+	/**
+	 * Whether a start begun at [generation] may go on: not stopped since, and remote control still on (the setting can be
+	 * turned off while the start awaits).
+	 */
+	private mayContinue(generation: number): boolean {
+		return generation === this.startGeneration && this.host.settingsManager.getRemoteControlEnabled();
 	}
 
 	/** The text of the last QR code shown. */
@@ -158,6 +176,17 @@ export class RemoteControlController {
 	}
 
 	private async start(reach: Reach): Promise<void> {
+		this.starting++;
+		try {
+			await this.startServing(reach, this.startGeneration);
+		} finally {
+			this.starting--;
+		}
+	}
+
+	/** [start]'s work. After every await before the listener opens, and before a tunnel, it checks [mayContinue]. */
+	private async startServing(reach: Reach, generation: number): Promise<void> {
+		if (!this.mayContinue(generation)) return;
 		const settings = this.host.settingsManager.getRemoteControlSettings();
 		const wantTunnel = reach === "tunnel" || (reach === "auto" && settings.tunnel !== "off");
 		if (!this.server) {
@@ -167,6 +196,11 @@ export class RemoteControlController {
 				keepTunnel: wantTunnel,
 				onTunnelDown: (message) => this.onAdoptedTunnelDown(message),
 			});
+			// Stopped, or turned off, while waiting for the claim: give it back and open nothing.
+			if (!this.mayContinue(generation)) {
+				claim.release();
+				return;
+			}
 			this.claim = claim;
 			const port = settings.port || (claim.kind === "service" ? claim.port : 0);
 			this.server = new RemoteControlServer({
@@ -190,8 +224,9 @@ export class RemoteControlController {
 			}
 		}
 		if (!this.server.running) {
+			const server = this.server;
 			try {
-				await this.server.start();
+				await server.start();
 			} catch (error) {
 				const claim = this.claim;
 				const port = settings.port || (claim?.kind === "service" ? claim.port : 0);
@@ -204,6 +239,12 @@ export class RemoteControlController {
 						: `Remote control could not start: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
+			// Stopped, or turned off, while the listener opened: close it again (stop() closed it if it ran meanwhile).
+			if (!this.mayContinue(generation)) {
+				if (this.server === server) await this.stop();
+				else await server.stop();
+				return;
+			}
 		}
 		if (reach === "lan") {
 			this.tunnelGeneration++;
@@ -211,7 +252,8 @@ export class RemoteControlController {
 			this.tunnel = undefined;
 			this.adoptedTunnel = undefined;
 		}
-		if (wantTunnel && !this.tunnel) await this.openTunnel(reach === "tunnel");
+		if (wantTunnel && !this.tunnel) await this.openTunnel(reach === "tunnel", generation);
+		if (!this.mayContinue(generation)) return;
 		this.updateStatus();
 		this.showPairingCode();
 	}
@@ -220,12 +262,14 @@ export class RemoteControlController {
 	 * Starts the tunnel. [required]: failures are errors (`/remote-control tunnel`); otherwise the LAN still works and a
 	 * failure is a warning, and a missing cloudflared is offered for install once (until "Don't ask again").
 	 */
-	private async openTunnel(required: boolean): Promise<void> {
+	private async openTunnel(required: boolean, startGeneration = this.startGeneration): Promise<void> {
 		const server = this.server;
 		if (!server) return;
 		const settings = this.host.settingsManager.getRemoteControlSettings();
 		const generation = this.tunnelGeneration;
 		const begin = async () => {
+			// (Also after the cloudflared question and its install, which wait for the user.)
+			if (!this.mayContinue(startGeneration)) return;
 			this.host.showStatus("Starting Cloudflare tunnel...");
 			const tunnel = await this.deps.startTunnel(server.port, WEBSOCKET_PATH, settings, {
 				onExit: (message) => {
@@ -235,8 +279,9 @@ export class RemoteControlController {
 					this.updateStatus();
 				},
 			});
-			// `lan` or `stop` ran while it was starting (the editor does not wait for a command): drop it.
-			if (generation !== this.tunnelGeneration || this.server !== server) {
+			// `lan` or `stop` ran while it was starting (the editor does not wait for a command), or remote control was
+			// turned off: drop it.
+			if (generation !== this.tunnelGeneration || this.server !== server || !this.mayContinue(startGeneration)) {
 				tunnel.stop();
 				return;
 			}
@@ -365,6 +410,7 @@ export class RemoteControlController {
 	}
 
 	async stop(announce = false): Promise<void> {
+		this.startGeneration++;
 		this.tunnelGeneration++;
 		// The service's own tunnel stays up for the service, which listens again on release.
 		if (this.tunnel !== this.adoptedTunnel) this.tunnel?.stop();
@@ -405,6 +451,29 @@ export class RemoteControlController {
 
 	notify(message: string, type?: "info" | "warning" | "error"): void {
 		this.server?.notify(message, type);
+	}
+
+	/** A connected phone renders views (the mobile UI kit). */
+	hasViewClients(): boolean {
+		return this.server?.running === true && this.server.hasViewClients();
+	}
+
+	sendView(request: ViewRequest): void {
+		this.server?.sendView(request);
+	}
+
+	updateViewSheet(viewKey: string, view: unknown, rev: number): void {
+		this.server?.updateViewSheet(viewKey, view, rev);
+	}
+
+	/**
+	 * A sheet on the phones while remote control runs (and on phones that connect while it is open): the first answer,
+	 * or undefined once `signal` aborts.
+	 */
+	viewSheet(request: ViewShowRequest, signal: AbortSignal): Promise<ViewSheetAnswer | undefined> {
+		const server = this.server;
+		if (server?.running) return server.requestViewSheet(request, signal);
+		return new Promise((resolve) => signal.addEventListener("abort", () => resolve(undefined), { once: true }));
 	}
 
 	/**

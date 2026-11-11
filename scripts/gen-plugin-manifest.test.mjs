@@ -1425,6 +1425,33 @@ describe("import.meta in the copies", () => {
 		assert.equal(rewriteCopy(source, FILE), source);
 	});
 
+	it("leaves a class's private names that match the rewritten ones: #require(), #import(), #__dirname", () => {
+		const source = [
+			"class Store {",
+			"	#__dirname() { return 1; }",
+			"	#require(id) { return id; }",
+			"	#import(id) { return id; }",
+			'	get(id) { return [this.#require(id), this?.#import(id), this. #__dirname(), this.#import("@mariozechner/pi-tui")]; }',
+			"}",
+		].join("\n");
+		assert.equal(rewriteCopy(source, FILE), source);
+	});
+
+	it("still rewrites require() and __dirname in a module whose class has private fields of those names", () => {
+		const REQUIRE = 'process.getBuiltinModule("node:module").createRequire("\\u002finstalled\\u002fext\\u002fsrc\\u002findex.ts")';
+		const source = [
+			"class Store { #require = (id) => id; #__dirname = 1; m() { this.#require = null; } }",
+			"const m = require(name), d = __dirname;",
+		].join("\n");
+		assert.equal(
+			rewriteCopy(source, FILE),
+			[
+				"class Store { #require = (id) => id; #__dirname = 1; m() { this.#require = null; } }",
+				`const m = ${REQUIRE}(name), d = "/installed/ext/src";`,
+			].join("\n"),
+		);
+	});
+
 	it("replaces inside a template literal's expressions, and tells a division from a regular expression", () => {
 		assert.equal(
 			rewriteCopy("`at ${import.meta.url} in ${ { f: import.meta.file }.f }`", FILE),
@@ -1595,10 +1622,11 @@ describe("import.meta in the copies", () => {
 		rmSync(join(out, "src"), { recursive: true, force: true });
 		const ran = spawnSync("bun", [join(out, "dist", "main.js")], { encoding: "utf8" });
 		assert.equal(ran.status, 0, ran.stderr);
+		// (Every path is the real one, as loaded from its files: Pi's loader imports the extension by its real path.)
 		const real = realpathSync(extension);
 		assert.deepEqual(JSON.parse(ran.stdout), {
 			data: "data",
-			file: join(extension, "index.ts"),
+			file: join(real, "index.ts"),
 			resolved: join(real, "data.txt"),
 			dyn: "dyn",
 			dynEsm: "dyn-esm",
@@ -1703,7 +1731,8 @@ describe("import.meta in the copies", () => {
 		writePluginFolder(planPlugins({ agentDir }), out);
 
 		const copy = await import(pathToFileURL(join(out, "global", "with-skills", "src", "index.js")).href);
-		assert.equal(copy.skills(), join(extension, "skills"));
+		// (Pinned to the real path, as Pi's loader imports the installed file: /var is /private/var on macOS.)
+		assert.equal(copy.skills(), join(realpathSync(extension), "skills"));
 		assert.equal(readFileSync(join(extension, "src", "index.js"), "utf8"), RESOLVES);
 		// (A dependency is pinned to its real path: where it is when the installed extension imports it, as Node resolves links.)
 		assert.equal(

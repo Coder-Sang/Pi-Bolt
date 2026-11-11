@@ -28,7 +28,7 @@ Claude, Codex, Vercel and GitHub are palettes in the spirit of those products' d
 choice loads as Pi-Bolt (`SettingsCodec` falls back on unknown names).
 
 The app's own themes besides the default, each built in full by `Palette.kt`'s `full()` (surfaces, inks, lines and
-overlays, accent, status, diff, syntax, ANSI, tints), and each held to the role checks below:
+overlays, accent, status, diff, syntax, ANSI, tints, chart colours), and each held to the role checks below:
 
 | Role | Paper (light) | Contrast (high contrast) | Lime (soft dark) | Moss (forest dark) |
 |---|---|---|---|---|
@@ -42,6 +42,7 @@ overlays, accent, status, diff, syntax, ANSI, tints), and each held to the role 
 | diff fg (bg) | `#116B40` / `#A2302C` (8%) | `#B4F5D2` / `#FFC2BF` (16%) | `#9BE6BF` / `#F7A9A5` (11%) | `#9BE6BF` / `#F7A9A5` (11%) |
 | ANSI blue / magenta / cyan | `#4D4D4D` / `#8C3A73` / `#39605F` | `#E0E0E0` / `#F0B8E0` / `#C8E8E8` | `#C4C9D4` / `#D7A6C8` / `#A6DCC3` | `#8FB3C7` / `#C9A3C8` / `#8FC7B0` |
 | tints | the light set (below) | the shared set | the shared set | the shared set |
+| chart colours | the light set (below) | the shared set | the shared set | the shared set |
 
 - **Paper** is the desktop's light mode (`tokens.css` light tokens and its light highlight.js colours). Surfaces step
   down from white, because white is the top. Status, type and the tints are deepened until they read as text on its
@@ -100,6 +101,24 @@ passes 3:1 as a glyph on every surface, and AA as an initial on its own 16% fill
 
 Paper uses `LightTints`: the same hues at lightness 0.50 (seafoam 0.47, chroma 0.09), which are `#994A00`,
 `#A33460`, `#8E3B94`, `#6F4BAC` and `#006B61`. The desktop's light tints (L 0.54 to 0.60) are 3.1 to 4.3:1 as an initial.
+
+**Chart colours** (`PiColors.chart0` to `chart3`, `charts[n % 4]`) draw the series of the mobile UI kit's `chart`, one
+per series in order; authors never choose them. They are their own set: never the accent, a tint (tints are agents
+only) or a status colour, and a series colour never stands for state. The set is Okabe–Ito's colour-blind-safe blue,
+orange, reddish purple and bluish green, and series also differ by dash (solid, dashed, dotted, dash-dot) and the
+legend, so colour is never the only cue. Each one passes 3:1 as a line or bar on every surface of every theme, and
+every pair stays apart (CIELAB ΔE at least 15) for normal vision and under simulated protanopia, deuteranopia and
+tritanopia (Machado 2009; `chartColoursReadAndStayApartInEveryTheme`).
+
+| Token | Name | Dark themes | Paper (`LightCharts`) |
+|---|---|---|---|
+| chart0 | blue | `#56B4E9` | `#005E93` |
+| chart1 | orange | `#E69F00` | `#665A05` |
+| chart2 | reddish purple | `#CC79A7` | `#964966` |
+| chart3 | bluish green | `#009E73` | `#089656` |
+
+Paper deepens each hue until it passes 3:1 on its greys; the orange becomes an ochre there because a deeper orange
+falls too close to the purple for protanopes. Axis labels, the legend's text and the TalkBack summary stay in the inks.
 
 Overlays: press = ink1 @ 7%, selected = ink1 @ 11%, focus line = ink1 @ 40% (Pi-Bolt: white @ 8.5%, 10%, 32%).
 
@@ -175,7 +194,7 @@ Contrast (WCAG 2.1, checked by `ContrastTest` for every theme and accent):
   plain, pressed and selected; ink3 at least 3:1 as a glyph on all of those; the accent's label AA on it, its fill 3:1
   against the surface (a button's shape) and AA as link text; ink1 AA on the text selection. `defaultThemeHasNoBlueCast`
   keeps the default's greys and everything drawn from them free of a cool cast, `defaultThemeIsTheWarmCharcoal` pins
-  its values, `subagentTintsReadInEveryTheme` checks the tints, `elevationStepsStayDistinct` keeps each surface a step further
+  its values, `subagentTintsReadInEveryTheme` checks the tints, `chartColoursReadAndStayApartInEveryTheme` the chart colours, `elevationStepsStayDistinct` keeps each surface a step further
   from the canvas in every theme (lighter on dark themes, darker on Paper; each step of the own themes at least
   1.05:1), `onlyPaperIsLight` pins the one light theme, `contrastThemeIsAaa` holds Contrast to 7:1, and the window
   colour must be the default canvas. Paper, Contrast and Lime greys carry no tint either.
@@ -701,7 +720,39 @@ fill runs under the navigation bar with its keys above it, and sits on the keybo
 Pi-Bolt" with "2 images" / "1 file" / "Text"; a segmented choice when there is more than one (Attach to chat |
 Import files, New project | Import files, Import files | Add to chat), the projects as 52dp radio rows (folder glyph,
 title, accent check), then the primary action. Attach and Add to chat open the project's session with the images in
-the tray or the text in the composer.
+the tray or the text in the composer. Text that is a Pi package link (a pi.dev, npm or GitHub URL, or a copied
+`pi install <source>`) says "A Pi package link" and defaults to Install package | Add to chat; Review package opens the
+package's install sheet (below), so a share never installs anything by itself.
+
+**Packages sheet.** "Packages", then a 48dp segmented Installed | Browse. Installed is the list as before (the source
+field and Install, the packages with on/off tags, the built-ins). Browse: a `PillSearchField` ("Search Pi packages",
+debounced 350 ms), then "Most downloaded" or "N found" (F2Section) and one `F2Row` per package (Inventory2 glyph, the
+name on one line, "v1.2.0 · 19k weekly · description" in meta, a success "installed" tag), "Show more" (secondary) for
+the next 20, and a meta footer naming the source (the npm registry's `pi-package` keyword, as pi.dev lists). Loading
+is a `LoadingRow`, offline or a registry error an `ErrorState` with Try again, no results an `EmptyState`. Only plain
+HTTPS GETs: registry.npmjs.org, api.npmjs.org, data.jsdelivr.com (file lists), raw.githubusercontent.com.
+
+**Package install sheet** (a Browse result, a `pibolt://install?source=` link, a shared link): the name and
+description in the header; a well with the source (monoSmall), version, weekly downloads and licence; "Compatibility":
+one `Notice` per finding (danger: `os`/`cpu`/`libc` exclude linux-arm64 glibc, Install becomes a disabled "Not for this
+phone"; warning: native code built at install, prebuilt binaries or platform packages without linux-arm64 glibc,
+`.node` files, native dependencies; info: install scripts, with their commands), or one success notice when nothing
+was found; "What it adds" (an `F2Row` per extension, skill, prompt and theme: Extension, AutoAwesome,
+ChatBubbleOutline, Palette); "Links" (Repository, pi.dev; an open glyph trails); with a project in context, "Install
+for" All projects | This project (48dp; this project needs the project trusted, else a meta line says to trust it
+first); the trust warning, or the install's progress (`LoadingRow`), success notice or error log; then Cancel and
+Install (Done once installed). Nothing installs before Install is tapped.
+
+**Private registry (packages sheet, Installed, "Advanced").** A collapsed `F2Row` ("Advanced", Tune glyph, the
+saved scope and URL or "Private registry" in meta, a chevron) opens: one meta line, "Registry URL" (`PiTextField`,
+default https://registry.npmjs.org/; https only, http just for 127.0.0.1/localhost), "Scope (optional)" (@company),
+and "Token" as a `SecretField`, or, once saved, a Key glyph with "Token saved" and a danger "Remove". Remove registry
+(secondary) and Save (primary). The token is sealed with the Android Keystore (prefs `npm-registry`, excluded from
+backup and transfer) and never shown again; it reaches npm only during an install, in a 0600 `.npmrc` under
+no_backup that npm reads as its global config and that is deleted afterwards. With a scope, Browse shows a 48dp
+segmented npm | @scope and searches the private registry (no keyword filter, the token sent only to it); a registry
+without npm's search API says to install by name. A private package's detail is read from that registry only. pi.dev pages are not an app link (pi.dev
+cannot be verified for Pi-Bolt), so they open in the browser; sharing one to Pi-Bolt is the way in.
 
 **Provider sheet (first run and Add provider).** Opens by itself once, 450 ms after the first frame of Home, when no
 provider has a key. First run: the bolt on a 56dp glass disc, then "Connect a model" (largeTitle) and one line ("Pi-Bolt

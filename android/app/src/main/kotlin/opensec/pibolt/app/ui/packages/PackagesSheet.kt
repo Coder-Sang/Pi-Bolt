@@ -13,9 +13,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import opensec.pibolt.app.PiBoltApp
+import opensec.pibolt.app.data.AppSettings
+import opensec.pibolt.app.engine.PageCatalog
+import opensec.pibolt.app.engine.PageEngine
+import opensec.pibolt.app.ui.session.views.iconFor
+import opensec.pibolt.protocol.session.PageInfo
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Inventory2
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -38,6 +46,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.OkHttpClient
+import opensec.pibolt.app.engine.CliResult
 import opensec.pibolt.app.engine.EngineApi
 import opensec.pibolt.app.session.SessionController
 import opensec.pibolt.app.ui.components.ConfirmSheet
@@ -45,6 +56,7 @@ import opensec.pibolt.app.ui.components.PiSheet
 import opensec.pibolt.app.ui.components.PiTextField
 import opensec.pibolt.app.ui.components.PrimaryButton
 import opensec.pibolt.app.ui.components.SecondaryButton
+import opensec.pibolt.app.ui.components.Segmented
 import opensec.pibolt.app.ui.components.SheetHeader
 import opensec.pibolt.app.ui.components.rememberSheetCloser
 import opensec.pibolt.app.ui.session.features2.AppExtension
@@ -56,21 +68,25 @@ import opensec.pibolt.app.ui.session.features2.F2Tag
 import opensec.pibolt.app.ui.session.features2.F2Toggle
 import opensec.pibolt.app.ui.session.features2.F2Well
 import opensec.pibolt.app.ui.session.features2.PiJsonFile
+import opensec.pibolt.app.ui.session.features2.ProjectTrust
 import opensec.pibolt.app.ui.theme.Pi
 import java.io.File
 
-/** What the packages screen shows: configured packages and the switched-off built-ins. */
-private data class PackagesView(val packages: List<PiPackage>, val disabledBuiltins: Set<String>, val listError: String?)
+/** What the packages screen shows: configured packages, the switched-off built-ins and whether the project is trusted. */
+private data class PackagesView(val packages: List<PiPackage>, val disabledBuiltins: Set<String>, val listError: String?, val projectTrusted: Boolean)
+
+private enum class PackagesTab { Installed, Browse }
 
 /**
  * Pi packages on this phone (the terminal's `pi list`, `pi install`, `pi remove` and `pi config`): the bundled todo and
  * subagents, installed npm and git packages, Pi's built-in extensions. A package can be switched off (its resources
- * filtered to none) or removed; a new one is installed from npm or git by name. Changes load when the session reloads
- * ([onReload], null when there is no session on this phone).
+ * filtered to none) or removed; a new one is installed from npm or git by name, or found in Browse ([BrowseTab],
+ * searched over [http]) and installed from its detail, for every project or the session's project alone. Changes load
+ * when the session reloads ([onReload], null when there is no session on this phone).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PackagesSheet(engine: EngineApi, controller: SessionController?, onReload: (() -> Unit)?, onMessage: (String) -> Unit, onDismiss: () -> Unit) {
+fun PackagesSheet(engine: EngineApi, http: OkHttpClient, controller: SessionController?, onReload: (() -> Unit)?, onMessage: (String) -> Unit, onDismiss: () -> Unit) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val close = rememberSheetCloser(state)
     val scope = rememberCoroutineScope()
@@ -84,24 +100,38 @@ fun PackagesSheet(engine: EngineApi, controller: SessionController?, onReload: (
     var log by remember { mutableStateOf<String?>(null) }
     var changed by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<PiPackage?>(null) }
+    var tab by remember { mutableStateOf(PackagesTab.Installed) }
+    val catalog = remember(http) { PackageCatalog(http) }
+    var browsing by remember { mutableStateOf<CatalogEntry?>(null) }
+    var browseStatus by remember { mutableStateOf<SourceStatus?>(null) }
+    val registryStore = remember { PrivateRegistries.get(context) }
+    var registryVersion by remember { mutableIntStateOf(0) }
+    var privateCatalog by remember { mutableStateOf<Pair<RegistryConfig, PackageCatalog>?>(null) }
+    LaunchedEffect(registryVersion) {
+        privateCatalog = withContext(Dispatchers.IO) { PrivateRegistries.catalog(registryStore, http) }
+    }
 
     LaunchedEffect(reload) {
         view = withContext(Dispatchers.IO) { load(engine, settingsFile, project) }
     }
 
-    fun runCli(label: String, args: List<String>, done: String) {
+    fun runCli(label: String, args: List<String>, done: String, onResult: (InstallStatus) -> Unit = {}) {
         if (working != null) return
         working = label
         log = null
+        onResult(InstallStatus.Running(label))
         scope.launch {
-            val result = engine.cli(args, cwd = project, timeoutMs = 600_000)
+            val result = packageCli(engine, context, args, cwd = project)
             working = null
             if (result.ok) {
                 changed = true
                 onMessage(done)
                 source = ""
+                onResult(InstallStatus.Done(done))
             } else {
-                log = (result.stderr.ifBlank { result.stdout }).trim().ifBlank { "Failed (exit code ${result.code})" }.takeLast(2000)
+                val text = cliFailure(result)
+                log = text
+                onResult(InstallStatus.Failed(text))
             }
             reload++
         }
@@ -110,14 +140,37 @@ fun PackagesSheet(engine: EngineApi, controller: SessionController?, onReload: (
     fun edit(change: (JsonObject) -> JsonObject?) {
         scope.launch {
             val ok = withContext(Dispatchers.IO) { PiJsonFile.update(settingsFile) { change(it) ?: it } }
-            if (ok) changed = true else onMessage("Could not change settings.json")
+            if (ok) {
+                changed = true
+                packagesChanged(engine, context)
+            } else {
+                onMessage("Could not change settings.json")
+            }
             reload++
         }
     }
 
     PiSheet(onDismiss = onDismiss, state = state) {
         SheetHeader("Packages", subtitle = "Extensions, skills and prompts that Pi loads.")
+        Segmented(
+            options = listOf(PackagesTab.Installed to "Installed", PackagesTab.Browse to "Browse"),
+            selected = tab,
+            onSelect = { tab = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            height = 48.dp,
+        )
         Column(Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState())) {
+            if (tab == PackagesTab.Browse) {
+                working?.let { F2Loading(it) }
+                ReloadWell(changed, onReload, close)
+                val users = view?.packages.orEmpty().filter { it.scope == PackageScope.User }
+                BrowseTab(catalog, privateCatalog, installed = PackageFormat.installedNames(users.map { it.source }) + users.mapNotNull { it.name }, onOpen = {
+                    // A finished result is for that visit only; a running install stays visible.
+                    if (browseStatus?.status !is InstallStatus.Running) browseStatus = null
+                    browsing = it
+                })
+                return@Column
+            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 PiTextField(
                     value = source,
@@ -146,14 +199,7 @@ fun PackagesSheet(engine: EngineApi, controller: SessionController?, onReload: (
             log?.let { text ->
                 F2Well { Text(text, style = Pi.type.monoSmall, color = Pi.colors.danger) }
             }
-            if (changed && onReload != null) {
-                F2Well {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Reload the session to apply changes", style = Pi.type.body, color = Pi.colors.ink1, modifier = Modifier.weight(1f))
-                        SecondaryButton("Reload", onClick = { close(onReload) })
-                    }
-                }
-            }
+            ReloadWell(changed, onReload, close)
             val v = view
             when {
                 v == null -> F2Loading("Loading packages")
@@ -188,10 +234,29 @@ fun PackagesSheet(engine: EngineApi, controller: SessionController?, onReload: (
                             edit { PackageList.setBuiltin(it, b.id, on) }
                         }
                     }
+                    RegistrySection(registryStore, onMessage = onMessage, onChanged = { registryVersion++ })
                     Spacer(Modifier.height(8.dp))
                 }
             }
         }
+    }
+
+    browsing?.let { entry ->
+        val source = "npm:${entry.name}"
+        val v = view
+        PackageInfoSheet(
+            source = source,
+            catalog = catalog,
+            known = entry,
+            project = project?.let { ProjectTarget(it, v?.projectTrusted == true) },
+            installed = PackageFormat.isInstalled(source, v?.packages.orEmpty().filter { it.scope == PackageScope.User }.map { it.source }),
+            status = SourceStatus.of(source, browseStatus),
+            onInstall = { args, local, title ->
+                runCli("Installing $title", args, if (local) "Installed $title for ${project?.name}" else "Installed $title", onResult = { browseStatus = SourceStatus(source, it) })
+            },
+            onDismiss = { browsing = null },
+            private = { privateCatalog },
+        )
     }
 
     detail?.let { pkg ->
@@ -224,7 +289,72 @@ private suspend fun load(engine: EngineApi, settingsFile: File, project: File?):
         s.copy(installedPath = l?.installedPath ?: s.installedPath)
     } + listed.filter { l -> fromSettings.none { it.source == l.source && it.scope == l.scope } }
     val packages = merged.map { p -> PackageList.withManifest(p.copy(bundled = "/share/pi-extensions/" in p.source)) }
-    return PackagesView(packages, PackageList.disabledBuiltins(settings), if (cli.ok) null else cli.stderr.trim().takeIf { it.isNotEmpty() })
+    val trusted = project?.let { dir ->
+        val trust = PiJsonFile.read(File(engine.agentDir, "trust.json")) ?: JsonObject(emptyMap())
+        val path = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+        ProjectTrust.decision(trust, path)?.trusted ?: ((settings["defaultProjectTrust"] as? JsonPrimitive)?.content == "always")
+    } == true
+    return PackagesView(packages, PackageList.disabledBuiltins(settings), if (cli.ok) null else cli.stderr.trim().takeIf { it.isNotEmpty() }, trusted)
+}
+
+/**
+ * A package's pages and Home tiles (docs/mobile-ui.md#package-pages-and-home-tiles): a page opens without a session
+ * (on the page engine); a tile is shown on Home only once turned on here (off by default).
+ */
+@Composable
+private fun PackagePagesSection(pkg: PiPackage, dir: String?, onOpen: (PageInfo) -> Unit) {
+    val app = LocalContext.current.applicationContext as PiBoltApp
+    val all by app.pages.pages.collectAsStateWithLifecycle()
+    val status by app.pages.status.collectAsStateWithLifecycle()
+    val settings by app.settings.settings.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { app.pages.refreshPages() }
+    val list = all
+    if (list == null) {
+        if (status is PageEngine.Status.LowMemory) return
+        F2Section("Pages")
+        when (val s = status) {
+            // The engine could not start or read them: say why, and let a tap try again.
+            is PageEngine.Status.Failed -> F2Row(
+                "Could not read the package's pages",
+                "${s.message}. Tap to try again",
+                Icons.Rounded.Refresh,
+                onClick = { app.pages.refreshPages(force = true) },
+                iconTint = Pi.colors.danger,
+            )
+            else -> F2Loading("Reading the package's pages")
+        }
+        return
+    }
+    val mine = PageCatalog.ofPackage(list, pkg.source, dir)
+    if (mine.isEmpty()) return
+    F2Section("Pages")
+    for (page in mine.filterNot { it.isTile }) {
+        F2Row(page.title, page.description, iconFor(page.icon) ?: Icons.Rounded.Extension, onClick = { onOpen(page) })
+    }
+    // Only tiles that still exist count toward Home's limit; turning one on or off drops the others' stale keys.
+    val shown = PageCatalog.shownTiles(list, settings.homeTiles).size
+    for (tile in mine.filter { it.isTile }) {
+        val on = tile.key in settings.homeTiles
+        F2Toggle("Show ${tile.title} on Home", tile.description ?: "A live tile on Home", checked = on, enabled = on || shown < AppSettings.MAX_HOME_TILES) { checked ->
+            app.settings.update { s -> s.copy(homeTiles = PageCatalog.toggleTile(list, s.homeTiles, tile.key, checked)) }
+        }
+    }
+}
+
+/** A failed `pi` command's output for the user: the end of stderr (else stdout), or its exit code. */
+internal fun cliFailure(result: CliResult): String =
+    (result.stderr.ifBlank { result.stdout }).trim().ifBlank { "Failed (exit code ${result.code})" }.takeLast(2000)
+
+/** "Reload the session to apply changes" with Reload, once something changed and a session can reload. */
+@Composable
+private fun ReloadWell(changed: Boolean, onReload: (() -> Unit)?, close: (() -> Unit) -> Unit) {
+    if (!changed || onReload == null) return
+    F2Well {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Reload the session to apply changes", style = Pi.type.body, color = Pi.colors.ink1, modifier = Modifier.weight(1f))
+            SecondaryButton("Reload", onClick = { close(onReload) })
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -240,6 +370,7 @@ private fun PackageDetailSheet(
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val close = rememberSheetCloser(state)
     var confirmRemove by remember { mutableStateOf(false) }
+    var openPage by remember { mutableStateOf<PageInfo?>(null) }
     var provided by remember { mutableStateOf<List<Provided>?>(null) }
     val dir = pkg.installedPath ?: pkg.source.takeIf { it.startsWith("/") }
     LaunchedEffect(pkg) {
@@ -262,6 +393,7 @@ private fun PackageDetailSheet(
                 }
             }
             F2Toggle("Load this package", if (pkg.disabled) "Not loaded" else "Loads in every session", checked = !pkg.disabled) { onEnabled(it) }
+            if (!pkg.disabled) PackagePagesSection(pkg, dir, onOpen = { openPage = it })
             F2Section("Commands and tools")
             val list = provided
             when {
@@ -282,6 +414,10 @@ private fun PackageDetailSheet(
             }
             Spacer(Modifier.height(8.dp))
         }
+    }
+    openPage?.let { page ->
+        val app = LocalContext.current.applicationContext as PiBoltApp
+        PackagePageSheet(app.pages, page.key, page.title, onClose = { openPage = null })
     }
     if (confirmRemove) {
         ConfirmSheet(

@@ -1,7 +1,7 @@
 # Fork Linux x64 releases
 
 The first production target is `Coder-Sang/Pi-Bolt`, branch `pi-bolt`, Linux x64. `VERSION`, `npm/package.json` and the
-launcher agree on `1.1.1`; Pi's source packages keep their independent upstream `1.5.0` version. Release tags are exactly
+launcher agree on `1.2.1`; Pi's source packages keep their independent upstream `1.5.2` version. Release tags are exactly
 `bolt-vVERSION` with three canonical numeric components. `bolt-vX.Y.Z-message` is a separate unsigned test prerelease path.
 Existing tags and releases are never moved, overwritten or used as a retry target for changed source.
 

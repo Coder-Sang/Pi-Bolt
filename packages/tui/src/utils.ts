@@ -498,6 +498,33 @@ export function isWebLink(url: string): boolean {
 	return /^(?:https?|mailto):/i.test(url);
 }
 
+/** Longest URL drawn as a hyperlink: VTE ignores longer ones (2083 bytes). */
+const MAX_HYPERLINK_URL_LENGTH = 2048;
+
+/**
+ * What a link to `url` may be a hyperlink (OSC 8) to, when `url` is a `file:` URL of an absolute path on this computer
+ * (`file:///…`, `file://localhost/…`): the URL as parsed, with spaces and other characters percent-encoded. Such a link is
+ * drawn with its URL printed after its text, as Pi draws the paths tools read and write, so the hyperlink opens what a
+ * click on the printed URL opens. Undefined for anything else: a file on another computer (`file://server/share`, or
+ * `file:////server/share`, a share Windows would sign in to), a URL without `//` (`file:C:/x`), one with an encoded
+ * separator (`%2f`, `%5c`) or control character, one with control or format characters (which can make the printed URL
+ * read as another), or one too long for terminals to keep.
+ */
+export function localFileLinkTarget(url: string): string | undefined {
+	if (!/^file:\/\/(?:localhost)?\//i.test(url) || /[\p{Cc}\p{Cf}]/u.test(url) || !URL.canParse(url)) return undefined;
+	const parsed = new URL(url);
+	if (
+		parsed.protocol !== "file:" ||
+		parsed.hostname !== "" ||
+		parsed.pathname.startsWith("//") ||
+		/%(?:2f|5c|[01][0-9a-f]|7f|c2%[89][0-9a-f])/i.test(parsed.href) ||
+		parsed.href.length > MAX_HYPERLINK_URL_LENGTH
+	) {
+		return undefined;
+	}
+	return parsed.href;
+}
+
 function extractAnsiCodes(str: string): string {
 	let result = "";
 	let i = str.indexOf("\x1b");
@@ -1198,6 +1225,27 @@ export function scanPrintableAsciiForTest(
  * whole, and a cached line kept as such a tree retains several times its own size. Converting a string to a number
  * reads it whole, so V8 flattens it in place; the strings' values do not change.
  */
+/** internLine()'s lines, by their text. */
+const internedLines = new Map<string, string>();
+/** Lines whose text before padding is at most this long are drawn alike often enough to be interned (internLine()). */
+export const INTERNED_LINE_LENGTH = 32;
+/** How many lines internLine() keeps before it starts again. */
+const INTERNED_LINES_KEPT = 1024;
+
+/**
+ * The line drawn for `line` that is kept for lines of the same text: for the short lines many components draw alike (a
+ * blank line of a width, a line of background only, a code fence), so that a long transcript keeps one copy of each instead
+ * of one per line (2,292 entries: about 12,000 such lines, 3 MB). Bounded: it starts again once it holds
+ * INTERNED_LINES_KEPT lines. The text is the same: only which string holds it differs.
+ */
+export function internLine(line: string): string {
+	const known = internedLines.get(line);
+	if (known !== undefined) return known;
+	if (internedLines.size >= INTERNED_LINES_KEPT) internedLines.clear();
+	internedLines.set(line, line);
+	return line;
+}
+
 export function flattenLines(lines: readonly string[]): void {
 	for (const line of lines) Number(line);
 }
@@ -1824,11 +1872,13 @@ export function sliceWithWidth(
 	while (i < line.length) {
 		const ansi = extractAnsiCode(line, i);
 		if (ansi) {
+			// APC sequences (cursor markers) are positional one-shot commands, not persistent style
+			// state, so codes before the range carry over only when they are not APC.
 			if (currentCol >= startCol && currentCol < endCol) {
 				// Keep original order: codes from before the range must precede codes at the boundary
 				result += pendingAnsi + ansi.code;
 				pendingAnsi = "";
-			} else if (currentCol < startCol) pendingAnsi += ansi.code;
+			} else if (currentCol < startCol && !ansi.code.startsWith("\x1b_")) pendingAnsi += ansi.code;
 			i += ansi.length;
 			continue;
 		}

@@ -1,5 +1,12 @@
 package opensec.pibolt.app.ui.session
 
+import opensec.pibolt.protocol.session.DialogKind
+import opensec.pibolt.app.ui.session.views.LocalViewHost
+import opensec.pibolt.app.ui.session.views.ViewHostUi
+import opensec.pibolt.app.ui.session.views.ViewPanels
+import opensec.pibolt.app.ui.session.views.ViewPageSheet
+import opensec.pibolt.app.ui.session.views.ViewSheet
+import opensec.pibolt.protocol.session.MobileViews
 import kotlinx.coroutines.flow.update
 import android.Manifest
 import android.net.Uri
@@ -577,6 +584,45 @@ internal fun SessionContent(
     // Changes only when a todo result or a run boundary changes the list.
     val todos by remember { derivedStateOf { state.value.todos } }
     val firstDialog by remember { derivedStateOf { state.value.dialogs.firstOrNull() } }
+    // The mobile UI kit: extensions' views, drawn natively (views/ViewUi.kt). Their events go to Pi as they happen.
+    // The host reads the session's views where they are drawn, so an update of one view redraws it, whichever slot it is
+    // in (an inline view's update changes nothing this screen reads itself).
+    val viewHost = remember(controller) {
+        ViewHostUi({ state.value.views }) { key, node, kind, value, values -> controller.viewEvent(key, node, kind, value, values) }
+    }
+    val views by remember { derivedStateOf { state.value.views } }
+    LaunchedEffect(viewHost) { snapshotFlow { state.value.views.keys }.collect { viewHost.prune() } }
+    val panels by remember { derivedStateOf { views.values.filter { it.slot == MobileViews.SLOT_PANEL } } }
+    val pages by remember { derivedStateOf { views.values.filter { it.slot == MobileViews.SLOT_PAGE } } }
+    var openPage by remember { mutableStateOf<String?>(null) }
+    // Pages packages registered (`get_pages`): built by Pi when opened from the menu, closed with their sheet.
+    val registeredPages by controller.registeredPages.collectAsStateWithLifecycle()
+    // A registered page asked for and not drawn yet: its sheet opens when its view reaches the session's state (the
+    // open_page response can come before it), or the page is closed again if it never does.
+    var pendingPage by remember { mutableStateOf<String?>(null) }
+    // The screen goes (navigation, or Android recreating the activity): registered pages it showed or waited for are
+    // closed, so their extensions stop what they run for them.
+    val shownPage by rememberUpdatedState(openPage)
+    val waitingPage by rememberUpdatedState(pendingPage)
+    val registeredNow by rememberUpdatedState(registeredPages)
+    DisposableEffect(controller) {
+        onDispose {
+            listOfNotNull(shownPage, waitingPage).distinct()
+                .filter { key -> registeredNow.any { it.key == key } }
+                .forEach { controller.closePage(it) }
+        }
+    }
+    LaunchedEffect(pendingPage) {
+        val key = pendingPage ?: return@LaunchedEffect
+        val arrived = withTimeoutOrNull(PAGE_VIEW_WAIT_MS) { snapshotFlow { state.value.views[key] }.first { it != null } }
+        if (pendingPage != key) return@LaunchedEffect
+        pendingPage = null
+        if (arrived != null) openPage = key else controller.closePage(key)
+    }
+    val menuPages = remember(pages, registeredPages) {
+        pages.map { it.key to (it.view.title ?: it.key) } + registeredPages.filter { r -> pages.none { it.key == r.key } }.map { it.key to it.title }
+    }
+    val sessionScope = rememberCoroutineScope()
     val empty by remember(memory) { derivedStateOf { state.value.hello && state.value.items.isEmpty() && state.value.streaming.isEmpty() && !state.value.isRunning && memory.pending.value == null } }
 
     val modelReadsImages by remember { derivedStateOf { state.value.model?.acceptsImages } }
@@ -1073,6 +1119,17 @@ internal fun SessionContent(
                 onRename = { sheet = Sheet.Rename },
                 onSearch = { searching = true },
                 onExport = { sheet = Sheet.Export },
+                pages = menuPages,
+                onPage = { key ->
+                    if (registeredPages.any { it.key == key } && views[key] == null) {
+                        // Another page still waiting for its view is given up: closed, so it does not stay open unseen.
+                        pendingPage?.let { previous -> if (previous != key) controller.closePage(previous) }
+                        pendingPage = key
+                        sessionScope.launch { if (!controller.openPage(key) && pendingPage == key) pendingPage = null }
+                    } else {
+                        openPage = key
+                    }
+                },
                 onResume = ::openResume,
                 onFork = ::openFork,
                 onClone = controller::cloneSession,
@@ -1100,7 +1157,7 @@ internal fun SessionContent(
                 if (!hello) {
                     LoadingState(title, linkState.value, local = local != null, onRetry = local?.onRestart ?: controller::retryNow, chat = chat)
                 } else {
-                    CompositionLocalProvider(LocalTurnReview provides review, LocalPlainChat provides chat) {
+                    CompositionLocalProvider(LocalTurnReview provides review, LocalPlainChat provides chat, LocalViewHost provides viewHost) {
                         Transcript(
                             state = state,
                             memory = memory,
@@ -1159,7 +1216,7 @@ internal fun SessionContent(
                             todoNow = now?.let { todoText(it, running) },
                             queued = queue.size,
                             asking = askingTitle,
-                            extras = extras.size,
+                            extras = extras.size + panels.size,
                             onExpand = {
                                 if (askingTitle != null && !imeVisible) {
                                     memory.hiddenDialog.value = null
@@ -1170,6 +1227,7 @@ internal fun SessionContent(
                             },
                         )
                     } else {
+                        ViewPanels(viewHost, panels, maxHeight = windowHeight * 0.4f)
                         StatusExtras(extras)
                         TodoPanel(todos, running, autoCollapse = !running || windowHeight < 560.dp, quiet = status.value.visible && statusOnScreen)
                         if (local != null && parts.preview) PreviewChipRow(local.onPreview, Modifier.padding(horizontal = Space.page))
@@ -1320,7 +1378,16 @@ internal fun SessionContent(
                 )
             }
         }
-    } else firstDialog?.let { dialog ->
+    } else firstDialog?.takeIf { it.kind == DialogKind.View }?.let { dialog ->
+        key(dialog.id) {
+            ViewSheet(
+                dialog = dialog,
+                onAnswer = { node, values -> controller.answerView(dialog.id, node, values) },
+                onCancel = { controller.cancelDialog(dialog.id) },
+                onEvent = { key, node, kind, value, values -> controller.viewEvent(key, node, kind, value, values) },
+            )
+        }
+    } ?: firstDialog?.let { dialog ->
         val shownAt = remember(dialog.id) { memory.dialogShownAt.getOrPut(dialog.id) { SystemClock.uptimeMillis() } }
         if (memory.hiddenDialog.value != dialog.id) {
             key(dialog.id) {
@@ -1334,6 +1401,18 @@ internal fun SessionContent(
                     cwd = cwd,
                 )
             }
+        }
+    }
+
+    openPage?.let { key ->
+        val entry = views[key]
+        if (entry == null) {
+            openPage = null
+        } else {
+            ViewPageSheet(viewHost, entry, onClose = {
+                openPage = null
+                if (registeredPages.any { it.key == key }) controller.closePage(key)
+            })
         }
     }
 
@@ -1589,6 +1668,9 @@ internal fun SessionContent(
 
 /** How long Regenerate waits for the fork's session before it sends anyway. */
 private const val FORK_SWITCH_MS = 5_000L
+
+/** How long a registered page's view may take to arrive after open_page before the open is given up. */
+private const val PAGE_VIEW_WAIT_MS = 15_000L
 
 /** What "Continue once" sends after a spending limit stopped a run. */
 private const val CONTINUE_PROMPT = "Continue."
